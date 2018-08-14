@@ -150,6 +150,9 @@ static int gen_74x164_probe(struct spi_device *spi)
 	chip->gpio_chip.parent = &spi->dev;
 	chip->gpio_chip.owner = THIS_MODULE;
 
+	of_property_read_u8_array(spi->dev.of_node, "lines-initial-states",
+				  chip->buffer, chip->registers);
+
 	mutex_init(&chip->lock);
 
 	ret = __gen_74x164_write_config(chip);

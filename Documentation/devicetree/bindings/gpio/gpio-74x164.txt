@@ -14,6 +14,11 @@ Required properties:
 
 Optional properties:
 - enable-gpios: GPIO connected to the OE (Output Enable) pin.
+- lines-initial-states: Bitmask that specifies the initial state of
+  each line. When a bit is set to zero, the corresponding output line
+  is initialized LOW. When a bit is set to one, the corresponding
+  output line is initialized HIGH. In case this property is not
+  defined, all lines will be initialized as LOW.
 
 Example:
 
