@@ -334,7 +334,7 @@ static void at803x_link_change_notify(struct phy_device *phydev)
 	 * cannot recover from by software.
 	 */
 	if (phydev->state == PHY_NOLINK) {
-		if (phydev->mdio.reset && !priv->phy_reset) {
+		if (phydev->mdio.reset_gpio && !priv->phy_reset) {
 			struct at803x_context context;
 
 			at803x_context_save(phydev, &context);
