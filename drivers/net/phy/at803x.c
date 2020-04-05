@@ -563,6 +563,13 @@ static int at803x_config_init(struct phy_device *phydev)
 {
 	int ret;
 
+	if (at803x_match_phy_id(phydev, ATH8031_PHY_ID)) {
+		ret = phy_select_page(phydev, AT803X_PAGE_COPPER);
+		if (ret < 0)
+			return ret;
+		phy_unlock_mdio_bus(phydev);
+	}
+
 	/* The RX and TX delay default is:
 	 *   after HW reset: RX delay enabled and TX delay disabled
 	 *   after SW reset: RX delay enabled, while TX delay retains the
