@@ -564,6 +564,14 @@ static int at803x_config_init(struct phy_device *phydev)
 	int ret;
 
 	if (at803x_match_phy_id(phydev, ATH8031_PHY_ID)) {
+		if (phydev->interface == PHY_INTERFACE_MODE_SGMII) {
+			ret = phy_modify_paged_changed(phydev,
+						       AT803X_PAGE_FIBER,
+						       MII_BMCR, 0,
+						       BMCR_ANENABLE);
+			if (ret < 0)
+				return ret;
+		}
 		ret = phy_select_page(phydev, AT803X_PAGE_COPPER);
 		if (ret < 0)
 			return ret;
