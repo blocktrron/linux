@@ -663,7 +663,6 @@ static void at803x_link_change_notify(struct phy_device *phydev)
 static int at803x_aneg_done(struct phy_device *phydev)
 {
 	int pssr;
-	int ccr;
 
 	int aneg_done = genphy_aneg_done(phydev);
 	if (aneg_done != BMSR_ANEGCOMPLETE)
@@ -673,8 +672,7 @@ static int at803x_aneg_done(struct phy_device *phydev)
 	 * in SGMII mode, if copper side autoneg is successful,
 	 * also check SGMII side autoneg result
 	 */
-	ccr = phy_read(phydev, AT803X_REG_CHIP_CONFIG);
-	if ((ccr & AT803X_MODE_CFG_MASK) != AT803X_MODE_CFG_SGMII)
+	if (phydev->interface != PHY_INTERFACE_MODE_SGMII)
 		return aneg_done;
 
 	pssr = phy_read_paged(phydev, AT803X_PAGE_FIBER, AT803X_PSSR);
