@@ -9,6 +9,7 @@
 
 #include <linux/phy.h>
 #include <linux/module.h>
+#include <linux/leds.h>
 #include <linux/string.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -44,6 +45,7 @@
 
 #define AT803X_SMART_SPEED			0x14
 #define AT803X_LED_CONTROL			0x18
+#define AT803X_LED_MANUAL_OVERRIDE		0x19
 
 #define AT803X_DEVICE_ADDR			0x03
 #define AT803X_LOC_MAC_ADDR_0_15_OFFSET		0x804C
@@ -106,6 +108,15 @@
 #define AT803X_PAGE_FIBER		0
 #define AT803X_PAGE_COPPER		1
 
+#define AT803X_LED_OFF				BIT(1)
+#define AT803X_LED_ON				BIT(1) | BIT(0)
+#define AT803X_LED_LINK_ACT_MASK		GENMASK(3, 0)
+#define AT803X_LED_LINK_ACT_OFF			(AT803X_LED_OFF << 2) | (AT803X_LED_OFF << 0)
+#define AT803X_LED_LINK_ACT_ON			(AT803X_LED_ON << 2) | (AT803X_LED_ON << 0)
+#define AT803X_LED_LINK_10_100_MASK		GENMASK(7, 6)
+#define AT803X_LED_LINK_10_100_OFF		(AT803X_LED_OFF << 6)
+#define AT803X_LED_LINK_10_100_ON		(AT803X_LED_ON << 6)
+
 #define ATH9331_PHY_ID 0x004dd041
 #define ATH8030_PHY_ID 0x004dd076
 #define ATH8031_PHY_ID 0x004dd074
@@ -124,6 +135,11 @@ struct at803x_priv {
 	struct regulator_dev *vddio_rdev;
 	struct regulator_dev *vddh_rdev;
 	struct regulator *vddio;
+
+	char led_link_act_name[32];
+	struct led_classdev led_link_act;
+	char led_10_100_name[32];
+	struct led_classdev led_10_100;
 };
 
 struct at803x_context {
@@ -406,6 +422,67 @@ static bool at803x_match_phy_id(struct phy_device *phydev, u32 phy_id)
 		== (phy_id & phydev->drv->phy_id_mask);
 }
 
+#ifdef LEDS_CLASS
+static void at803x_led_set_brightness(struct led_classdev *led_cdev,
+				      enum led_brightness brightness)
+{
+	struct phy_device *phydev = container_of(led_cdev, struct phy_device,
+						 led_cdev);
+	struct at803x_priv *priv = phydev->priv;
+	u32 mask, set;
+
+	if (led_cdev == &priv->led_link_act) {
+		mask = AT803X_LED_LINK_ACT_MASK;
+		set = brightness ? AT803X_LED_LINK_ACT_ON : AT803X_LED_LINK_ACT_OFF;
+	} else if (led_cdev == &priv->led_10_100) {
+		mask = AT803X_LED_10_100_ACT_MASK;
+		set = brightness ? AT803X_LED_10_100_ACT_ON : AT803X_LED_10_100_ACT_OFF;
+	}
+
+	phy_modify(phydev, AT803X_LED_MANUAL_OVERRIDE, mask, set)
+}
+
+static int at803x_leds_probe(struct phy_device *phydev)
+{
+	struct device_node *node = phydev->mdio.dev.of_node;
+	struct at803x_priv *priv = phydev->priv;
+	struct device *dev = &phydev->mdio.dev;
+	int ret;
+
+	if (!of_property_read_bool(node, "led-controller"))
+		return -ENOSYS;
+
+	/* Register activity LED */
+	snprintf(priv->led_link_act_name, sizeof(priv->led_link_act_name),
+		 "at803x::link-act");
+
+	priv->led_link_act.brightness_set = at803x_led_set_brightness;
+	priv->led_link_act.name = priv->led_link_act_name;
+
+	ret = led_classdev_register(phydev->mdio.dev, &priv->led_link_act);
+
+	if (ret)
+		return ret;
+
+	/* Register 10_100 LED */
+	snprintf(priv->led_10_100_name, sizeof(priv->led_10_100_name),
+		 "at803x::link-100-10");
+
+	priv->led_10_100.brightness_set = at803x_led_set_brightness;
+	priv->led_10_100.name = priv->led_10_100_name;
+
+	return led_classdev_register(phydev->mdio.dev, &priv->led_10_100);
+}
+
+static void at803x_leds_remove(struct phy_device *phydev)
+{
+	struct at803x_priv *priv = phydev->priv;
+
+	led_classdev_unregister(&priv->led_link_act);
+	led_classdev_unregister(&priv->led_10_100);
+}
+#endif
+
 static int at803x_parse_dt(struct phy_device *phydev)
 {
 	struct device_node *node = phydev->mdio.dev.of_node;
@@ -501,6 +578,12 @@ static int at803x_parse_dt(struct phy_device *phydev)
 			return ret;
 	}
 
+#ifdef LEDS_CLASS
+	if (at803x_match_phy_id(phydev, ATH8031_PHY_ID) ||
+	    at803x_match_phy_id(phydev, ATH8035_PHY_ID))
+	at803x_leds_probe(phydev);
+#endif
+
 	return 0;
 }
 
@@ -521,6 +604,10 @@ static int at803x_probe(struct phy_device *phydev)
 static void at803x_remove(struct phy_device *phydev)
 {
 	struct at803x_priv *priv = phydev->priv;
+
+#ifdef LEDS_CLASS
+	at803x_leds_remove(phydev);
+#endif
 
 	if (priv->vddio)
 		regulator_disable(priv->vddio);
