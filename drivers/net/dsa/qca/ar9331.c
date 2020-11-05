@@ -50,6 +50,8 @@
 #define AR9331_SW_NAME				"ar9331_switch"
 #define AR9331_SW_PORTS				6
 
+#define AR9331_CPU_PORT				0
+
 /* dummy reg to change page */
 #define AR9331_SW_REG_PAGE			0x40000
 
@@ -60,9 +62,15 @@
 
 #define AR9331_SW_REG_FLOOD_MASK		0x2c
 #define AR9331_SW_FLOOD_MASK_BROAD_TO_CPU	BIT(26)
+#define AR9344_SW_FLOOD_MASK_BC_DP_M		GENMASK(31, 25)
+#define AR9344_SW_FLOOD_MASK_MC_FLOOD_DP_M	GENMASK(22, 16)
+#define AR9344_SW_FLOOD_MASK_UC_FLOOD_DP_M	GENMASK(6, 0)
 
 #define AR9331_SW_REG_GLOBAL_CTRL		0x30
 #define AR9331_SW_GLOBAL_CTRL_MFS_M		GENMASK(13, 0)
+
+#define AR9331_SW_REG_CPU_PORT			0x78
+#define AR9344_SW_CPU_PORT_CPU_EN		BIT(8)
 
 #define AR9331_SW_REG_MDIO_CTRL			0x98
 #define AR9331_SW_MDIO_CTRL_BUSY		BIT(31)
@@ -100,6 +108,17 @@
 	(AR9331_SW_PORT_STATUS_DUPLEX_MODE | \
 	 AR9331_SW_PORT_STATUS_RX_FLOW_EN | AR9331_SW_PORT_STATUS_TX_FLOW_EN | \
 	 AR9331_SW_PORT_STATUS_SPEED_M)
+
+#define AR9331_SW_REG_PORT_CTRL(_port)		(0x104 + (_port) * 0x100)
+#define AR9344_SW_PORT_CTRL_QCA_HDR		BIT(11)
+
+#define AR9344_SW_REG_PORT_VLAN1(_port)		(0x108 + (_port) * 0x100)
+#define AR9344_SW_PORT_VLAN1_PORT_VLAN_EN	BIT(28)
+
+#define AR9344_SW_REG_PORT_VLAN2(_port)		(0x10C + (_port) * 0x100)
+#define AR9344_SW_PORT_VLAN2_PORT_VID_MEM_M	GENMASK(22, 16)
+#define AR9344_SW_PORT_VLAN2_SET_PORTS(_ports) \
+	(FIELD_PREP(AR9344_SW_PORT_VLAN2_PORT_VID_MEM_M, _ports))
 
 /* Phy bypass mode
  * ------------------------------------------------------------------------
@@ -334,6 +353,88 @@ error:
 	return ret;
 }
 
+static int ar9344_sw_setup(struct dsa_switch *ds)
+{
+	struct ar9331_sw_priv *priv = (struct ar9331_sw_priv *)ds->priv;
+	struct regmap *regmap = priv->regmap;
+	int ret;
+	int i;
+
+	/* CPU port has to be Port 0 */
+	if (!dsa_is_cpu_port(ds, AR9331_CPU_PORT)) {
+		pr_err("port 0 is not the CPU port\n");
+		return -EINVAL;
+	}
+
+	ret = ar9331_sw_reset(priv);
+	if (ret)
+		return ret;
+
+	ret = ar9331_sw_mbus_init(priv);
+	if (ret)
+		return ret;
+
+	/* Enable CPU port */
+	ret = regmap_update_bits(regmap, AR9331_SW_REG_CPU_PORT,
+				 AR9344_SW_CPU_PORT_CPU_EN,
+				 AR9344_SW_CPU_PORT_CPU_EN);
+	if (ret)
+		goto error;
+
+	/* Enable QCA header on CPU port */
+	ret = regmap_update_bits(regmap, AR9331_SW_REG_PORT_CTRL(0),
+				 AR9344_SW_PORT_CTRL_QCA_HDR,
+				 AR9344_SW_PORT_CTRL_QCA_HDR);
+	if (ret)
+		goto error;
+
+	/* Set max frame size to the maximum supported value */
+	ret = regmap_update_bits(regmap, AR9331_SW_REG_GLOBAL_CTRL,
+				 AR9331_SW_GLOBAL_CTRL_MFS_M,
+				 AR9331_SW_GLOBAL_CTRL_MFS_M);
+	if (ret)
+		goto error;
+
+	/* Forward all unknown frames to CPU port for Linux processing */
+	ret = regmap_update_bits(regmap, AR9331_SW_REG_FLOOD_MASK,
+				 FIELD_PREP(AR9344_SW_FLOOD_MASK_BC_DP_M, BIT(AR9331_CPU_PORT)) |
+				 FIELD_PREP(AR9344_SW_FLOOD_MASK_MC_FLOOD_DP_M, BIT(AR9331_CPU_PORT)) |
+				 FIELD_PREP(AR9344_SW_FLOOD_MASK_UC_FLOOD_DP_M, BIT(AR9331_CPU_PORT)),
+				 FIELD_PREP(AR9344_SW_FLOOD_MASK_BC_DP_M, BIT(AR9331_CPU_PORT)) |
+				 FIELD_PREP(AR9344_SW_FLOOD_MASK_MC_FLOOD_DP_M, BIT(AR9331_CPU_PORT)) |
+				 FIELD_PREP(AR9344_SW_FLOOD_MASK_UC_FLOOD_DP_M, BIT(AR9331_CPU_PORT)));
+	if (ret)
+		goto error;
+
+	/* Setup connection between CPU port & user ports */
+	for (i = 0; i < AR9331_SW_PORTS; i++) {
+		/* Enable Port-based VLAN */
+		ret = regmap_update_bits(regmap, AR9344_SW_REG_PORT_VLAN1(i),
+					 AR9344_SW_PORT_VLAN1_PORT_VLAN_EN,
+					 AR9344_SW_PORT_VLAN1_PORT_VLAN_EN);
+		if (ret)
+			goto error;
+
+		/* CPU port is already connected to all ports */
+		if (dsa_is_cpu_port(ds, i))
+			continue;
+
+		/* Individual user ports get connected to CPU port only */
+		if (dsa_is_user_port(ds, i)) {
+			ret = regmap_update_bits(regmap, AR9344_SW_REG_PORT_VLAN2(i),
+						 AR9344_SW_PORT_VLAN2_PORT_VID_MEM_M,
+						 AR9344_SW_PORT_VLAN2_SET_PORTS(BIT(AR9331_CPU_PORT)));
+			if (ret)
+				goto error;
+		}
+	}
+
+	return 0;
+error:
+	dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
+	return ret;
+}
+
 static void ar9331_sw_port_disable(struct dsa_switch *ds, int port)
 {
 	struct ar9331_sw_priv *priv = (struct ar9331_sw_priv *)ds->priv;
@@ -350,6 +451,83 @@ static enum dsa_tag_protocol ar9331_sw_get_tag_protocol(struct dsa_switch *ds,
 							enum dsa_tag_protocol m)
 {
 	return DSA_TAG_PROTO_AR9331;
+}
+
+static enum dsa_tag_protocol ar9344_sw_get_tag_protocol(struct dsa_switch *ds,
+							int port,
+							enum dsa_tag_protocol m)
+{
+	return DSA_TAG_PROTO_AR9344;
+}
+
+static int ar9344_port_bridge_join(struct dsa_switch *ds, int port,
+				   struct net_device *br)
+{
+	struct ar9331_sw_priv *priv = (struct ar9331_sw_priv *)ds->priv;
+	struct regmap *regmap = priv->regmap;
+	int port_mask = BIT(AR9331_CPU_PORT);
+	int ret;
+	int i;
+
+	for (i = 1; i < AR9331_SW_PORTS; i++) {
+		if (dsa_to_port(ds, i)->bridge_dev != br)
+			continue;
+		/* Add this port to the portvlan mask of the other ports
+		 * in the bridge
+		 */
+		ret = regmap_update_bits(regmap,
+					 AR9344_SW_REG_PORT_VLAN2(i),
+					 AR9344_SW_PORT_VLAN2_SET_PORTS(BIT(port)),
+					 AR9344_SW_PORT_VLAN2_SET_PORTS(BIT(port)));
+		if (ret)
+			goto error;
+
+		if (i != port)
+			port_mask |= BIT(i);
+	}
+	/* Add all other ports to this ports portvlan mask */
+	ret = regmap_update_bits(regmap, AR9344_SW_REG_PORT_VLAN2(port),
+				 AR9344_SW_PORT_VLAN2_PORT_VID_MEM_M, 
+				 AR9344_SW_PORT_VLAN2_SET_PORTS(port_mask));
+	if (ret)
+		goto error;
+
+	return 0;
+error:
+	dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
+	return ret;
+}
+
+static void ar9344_port_bridge_leave(struct dsa_switch *ds, int port,
+				    struct net_device *br)
+{
+	struct ar9331_sw_priv *priv = (struct ar9331_sw_priv *)ds->priv;
+	struct regmap *regmap = priv->regmap;
+	int ret;
+	int i;
+
+	for (i = 1; i < AR9331_SW_PORTS; i++) {
+		if (dsa_to_port(ds, i)->bridge_dev != br)
+			continue;
+		/* Remove this port to the portvlan mask of the other ports
+		 * in the bridge
+		 */
+		ret = regmap_update_bits(regmap,
+					 AR9344_SW_REG_PORT_VLAN2(i),
+					 AR9344_SW_PORT_VLAN2_SET_PORTS(BIT(port)),
+					 0);
+		if (ret)
+			goto error;
+	}
+
+	/* Set the cpu port to be the only one in the portvlan mask of
+	 * this port
+	 */
+	ret = regmap_update_bits(regmap, AR9344_SW_REG_PORT_VLAN2(port),
+				 AR9344_SW_PORT_VLAN2_PORT_VID_MEM_M,
+				 AR9344_SW_PORT_VLAN2_SET_PORTS(BIT(AR9331_CPU_PORT)));
+error:
+	dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
 }
 
 static void ar9331_sw_phylink_validate(struct dsa_switch *ds, int port,
@@ -479,6 +657,18 @@ static const struct dsa_switch_ops ar9331_sw_ops = {
 	.get_tag_protocol	= ar9331_sw_get_tag_protocol,
 	.setup			= ar9331_sw_setup,
 	.port_disable		= ar9331_sw_port_disable,
+	.phylink_validate	= ar9331_sw_phylink_validate,
+	.phylink_mac_config	= ar9331_sw_phylink_mac_config,
+	.phylink_mac_link_down	= ar9331_sw_phylink_mac_link_down,
+	.phylink_mac_link_up	= ar9331_sw_phylink_mac_link_up,
+};
+
+static const struct dsa_switch_ops ar9344_sw_ops = {
+	.get_tag_protocol	= ar9344_sw_get_tag_protocol,
+	.setup			= ar9344_sw_setup,
+	.port_disable		= ar9331_sw_port_disable,
+	.port_bridge_join	= ar9344_port_bridge_join,
+	.port_bridge_leave	= ar9344_port_bridge_leave,
 	.phylink_validate	= ar9331_sw_phylink_validate,
 	.phylink_mac_config	= ar9331_sw_phylink_mac_config,
 	.phylink_mac_link_down	= ar9331_sw_phylink_mac_link_down,
@@ -812,7 +1002,11 @@ static int ar9331_sw_probe(struct mdio_device *mdiodev)
 	ds->dev = &mdiodev->dev;
 	ds->num_ports = AR9331_SW_PORTS;
 	ds->priv = priv;
-	priv->ops = ar9331_sw_ops;
+
+	if (of_device_is_compatible(ds->dev->of_node, "qca,ar9344-switch"))
+		priv->ops = ar9344_sw_ops;
+	else
+		priv->ops = ar9331_sw_ops;
 	ds->ops = &priv->ops;
 	dev_set_drvdata(&mdiodev->dev, priv);
 
@@ -841,6 +1035,7 @@ static void ar9331_sw_remove(struct mdio_device *mdiodev)
 
 static const struct of_device_id ar9331_sw_of_match[] = {
 	{ .compatible = "qca,ar9331-switch" },
+	{ .compatible = "qca,ar9344-switch" },
 	{ },
 };
 
