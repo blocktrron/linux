@@ -1,12 +1,12 @@
-Atheros AR9331 built-in switch
+Atheros AR9xxx built-in switch
 =============================
 
-It is a switch built-in to Atheros AR9331 WiSoC and addressable over internal
-MDIO bus. All PHYs are built-in as well.
+It is a switch built-in to Atheros AR9xxx WiSoC family and addressable over
+internal MDIO bus. All PHYs are built-in as well.
 
 Required properties:
 
- - compatible: should be: "qca,ar9331-switch"
+ - compatible: should be: "qca,ar9331-switch" or "qca,ar9344-switch"
  - reg: Address on the MII bus for the switch.
  - resets : Must contain an entry for each entry in reset-names.
  - reset-names : Must include the following entries: "switch"
