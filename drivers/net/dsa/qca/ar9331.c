@@ -40,6 +40,7 @@
  */
 
 #include <linux/bitfield.h>
+#include <linux/if_bridge.h>
 #include <linux/module.h>
 #include <linux/of_irq.h>
 #include <linux/of_mdio.h>
@@ -68,6 +69,17 @@
 
 #define AR9331_SW_REG_GLOBAL_CTRL		0x30
 #define AR9331_SW_GLOBAL_CTRL_MFS_M		GENMASK(13, 0)
+
+#define AR9331_SW_REG_VLAN_TABLE0		0x40
+#define AR9331_SW_VLAN_TABLE0_VID		GENMASK(27, 16)
+#define AR9331_SW_VLAN_TABLE0_PORT_NUM	GENMASK(11, 8)
+#define AR9331_SW_VLAN_TABLE0_VT_FULL	BIT(4)
+#define AR9331_SW_VLAN_TABLE0_VT_BUSY	BIT(3)
+#define AR9331_SW_VLAN_TABLE0_VT_FUNC	GENMASK(2, 0)
+
+#define AR9331_SW_REG_VLAN_TABLE1		0x44
+#define AR9331_SW_VLAN_TABLE1_VT_VALID	BIT(11)
+#define AR9331_SW_VLAN_TABLE1_VT_MEM_M	GENMASK(6, 0)
 
 #define AR9331_SW_REG_CPU_PORT			0x78
 #define AR9344_SW_CPU_PORT_CPU_EN		BIT(8)
@@ -111,11 +123,20 @@
 
 #define AR9331_SW_REG_PORT_CTRL(_port)		(0x104 + (_port) * 0x100)
 #define AR9344_SW_PORT_CTRL_QCA_HDR		BIT(11)
+#define AR9344_SW_PORT_CTRL_EG_VLAN_MODE	GENMASK(9, 8)
 
 #define AR9344_SW_REG_PORT_VLAN1(_port)		(0x108 + (_port) * 0x100)
 #define AR9344_SW_PORT_VLAN1_PORT_VLAN_EN	BIT(28)
+#define AR9344_SW_PORT_VLAN_PORT_CVID_M		GENMASK(27, 16)
+#define AR9344_SW_PORT_VLAN_PORT_CVID(_vid) \
+	(FIELD_PREP(AR9344_SW_PORT_VLAN_PORT_CVID_M, _vid))
+#define AR9344_SW_PORT_VLAN_PORT_SVID_M		GENMASK(11, 0)
+#define AR9344_SW_PORT_VLAN_PORT_SVID(_vid) \
+	(FIELD_PREP(AR9344_SW_PORT_VLAN_PORT_SVID_M, _vid))
 
 #define AR9344_SW_REG_PORT_VLAN2(_port)		(0x10C + (_port) * 0x100)
+#define AR9344_SW_PORT_VLAN2_1Q_MODE_M		GENMASK(31, 30)
+#define AR9344_SW_PORT_VLAN2_ING_VLAN_MODE_M	GENMASK(28, 27)
 #define AR9344_SW_PORT_VLAN2_PORT_VID_MEM_M	GENMASK(22, 16)
 #define AR9344_SW_PORT_VLAN2_SET_PORTS(_ports) \
 	(FIELD_PREP(AR9344_SW_PORT_VLAN2_PORT_VID_MEM_M, _ports))
@@ -173,6 +194,20 @@
 #define AR9331_SW_MDIO_POLL_SLEEP_US		10
 #define AR9331_SW_MDIO_POLL_TIMEOUT_US		100
 
+#define AR9331_SW_VLAN_POLL_SLEEP_US		10
+#define AR9331_SW_VLAN_POLL_TIMEOUT_US		100
+
+
+enum ar9331_vlan_cmd {
+	AR9331_VLAN_NOP = 0,
+	AR9331_VLAN_FLUSH = 1,
+	AR9331_VLAN_LOAD = 2,
+	AR9331_VLAN_PURGE = 3,
+	AR9331_VLAN_REMOVE_PORT = 4,
+	AR9331_VLAN_NEXT = 5,
+	AR9331_VLAN_READ = 6,
+};
+
 struct ar9331_sw_priv {
 	struct device *dev;
 	struct dsa_switch ds;
@@ -182,6 +217,7 @@ struct ar9331_sw_priv {
 	struct mii_bus *sbus; /* mdio slave */
 	struct regmap *regmap;
 	struct reset_control *sw_reset;
+	u8 port_pvid[AR9331_SW_PORTS];
 };
 
 /* Warning: switch reset will reset last AR9331_SW_MDIO_PHY_MODE_PAGE request
@@ -397,6 +433,7 @@ static int ar9344_sw_setup(struct dsa_switch *ds)
 
 	/* Forward all unknown frames to CPU port for Linux processing */
 	ret = regmap_update_bits(regmap, AR9331_SW_REG_FLOOD_MASK,
+				 AR9344_SW_FLOOD_MASK_BC_DP_M | AR9344_SW_FLOOD_MASK_MC_FLOOD_DP_M | AR9344_SW_FLOOD_MASK_UC_FLOOD_DP_M,
 				 FIELD_PREP(AR9344_SW_FLOOD_MASK_BC_DP_M, BIT(AR9331_CPU_PORT)) |
 				 FIELD_PREP(AR9344_SW_FLOOD_MASK_MC_FLOOD_DP_M, BIT(AR9331_CPU_PORT)) |
 				 FIELD_PREP(AR9344_SW_FLOOD_MASK_UC_FLOOD_DP_M, BIT(AR9331_CPU_PORT)));
@@ -526,6 +563,235 @@ static void ar9344_port_bridge_leave(struct dsa_switch *ds, int port,
 error:
 	dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
 }
+
+static int ar9331_vlan_access(struct ar9331_sw_priv *priv, enum ar9331_vlan_cmd cmd,
+			      u16 vid)
+{
+	struct regmap *regmap = priv->regmap;
+	u32 reg;
+	int val;
+	int ret;
+
+	/* Set the command and VLAN index */
+	reg = AR9331_SW_VLAN_TABLE0_VT_BUSY;
+	reg |= FIELD_PREP(AR9331_SW_VLAN_TABLE0_VT_FUNC, cmd);
+	reg |= FIELD_PREP(AR9331_SW_VLAN_TABLE0_VID, vid);
+
+	/* Write the function register triggering the table access */
+	ret = regmap_write(regmap, AR9331_SW_REG_VLAN_TABLE0, reg);
+	if (ret)
+		goto error;
+
+	/* wait for completion */
+	ret = regmap_read_poll_timeout(regmap, AR9331_SW_REG_VLAN_TABLE0, val,
+				       !(val & AR9331_SW_VLAN_TABLE0_VT_BUSY),
+				       AR9331_SW_VLAN_POLL_SLEEP_US,
+				       AR9331_SW_VLAN_POLL_TIMEOUT_US);
+	if (ret)
+		goto error;
+
+	/* Table full condition can only occur when loading a VLAN */
+	if (cmd != AR9331_VLAN_LOAD)
+		return 0;
+
+	/* This can ONLY happen on AR7240 / AR9331.
+	 * AR9344 onwards supports full 4K VLAN.
+	 */
+	ret = regmap_read(regmap, AR9331_SW_REG_VLAN_TABLE0, &reg);
+	if (reg & AR9331_SW_VLAN_TABLE0_VT_FULL)
+		pr_warn("Table reported as full\n");
+
+error:
+	if (ret)
+		dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
+	return ret;
+}
+
+static int
+ar9331_vlan_add(struct ar9331_sw_priv *priv, u8 port, u16 vid, bool untagged)
+{
+	struct regmap *regmap = priv->regmap;
+	u32 reg;
+	int ret;
+
+	/* We do the right thing with VLAN 0 and treat it as untagged while
+	 * preserving the tag on egress.
+	 */
+	if (vid == 0)
+		return 0;
+
+	/* Only a single untagged VLAN on the port (or fully tagged operation) */
+	if (priv->port_pvid[port] && priv->port_pvid[port] != vid && untagged) {
+		ret = -ENOMEM;
+		goto error;
+	}
+
+	if (untagged)
+		priv->port_pvid[port] = vid;
+
+	ret = ar9331_vlan_access(priv, AR9331_VLAN_READ, vid);
+	if (ret)
+		goto error;
+
+	ret = regmap_read(regmap, AR9331_SW_REG_VLAN_TABLE1, &reg);
+	if (ret)
+		goto error;
+
+	reg &= AR9331_SW_VLAN_TABLE1_VT_MEM_M;
+	reg |= AR9331_SW_VLAN_TABLE1_VT_VALID;
+	reg |= BIT(port);
+
+	ret = regmap_write_bits(regmap,
+				AR9331_SW_REG_VLAN_TABLE1,
+				AR9331_SW_VLAN_TABLE1_VT_VALID |
+				AR9331_SW_VLAN_TABLE1_VT_MEM_M,
+				reg);
+	if (ret)
+		goto error;
+
+	ret = ar9331_vlan_access(priv, AR9331_VLAN_LOAD, vid);
+
+error:
+	if (ret)
+		dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
+	return ret;
+}
+
+static int ar9331_vlan_del(struct ar9331_sw_priv *priv, u8 port, u16 vid)
+{
+	struct regmap *regmap = priv->regmap;
+	bool del;
+	u32 reg;
+	int ret;
+
+	ret = ar9331_vlan_access(priv, AR9331_VLAN_READ, vid);
+	if (ret)
+		goto error;
+
+	ret = regmap_read(regmap, AR9331_SW_REG_VLAN_TABLE1, &reg);
+	if (ret)
+		goto error;
+
+
+	reg |= AR9331_SW_VLAN_TABLE1_VT_VALID;
+	reg &= ~BIT(port);
+
+	/* Check if we're the last member to be removed */
+	del = !(reg & AR9331_SW_VLAN_TABLE1_VT_MEM_M);
+
+	if (del) {
+		ret = ar9331_vlan_access(priv, AR9331_VLAN_PURGE, vid);
+	} else {
+		ret = regmap_write_bits(regmap,
+					AR9331_SW_REG_VLAN_TABLE1,
+					AR9331_SW_VLAN_TABLE1_VT_VALID |
+					AR9331_SW_VLAN_TABLE1_VT_MEM_M,
+					reg);
+		if (ret)
+			goto error;
+
+		ret = ar9331_vlan_access(priv, AR9331_VLAN_LOAD, vid);
+	}
+
+	if (priv->port_pvid[port] == vid)
+		priv->port_pvid[port] = 0;
+
+error:
+	if (ret)
+		dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
+	return ret;
+}
+
+static int ar9344_port_vlan_filtering(struct dsa_switch *ds, int port,
+				      bool vlan_filtering,
+				      struct switchdev_trans *trans)
+{
+	struct ar9331_sw_priv *priv = (struct ar9331_sw_priv *)ds->priv;
+	struct regmap *regmap = priv->regmap;
+	u8 qmode;
+	int ret;
+
+	if (switchdev_trans_ph_prepare(trans))
+		return 0;
+
+	qmode = vlan_filtering ? 0x3 : 0x0;
+
+	ret = regmap_update_bits(regmap, AR9344_SW_REG_PORT_VLAN2(port),
+				AR9344_SW_PORT_VLAN2_1Q_MODE_M,
+				FIELD_PREP(AR9344_SW_PORT_VLAN2_1Q_MODE_M, qmode));
+	if (ret)
+		dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
+
+	return ret;
+}
+
+static int ar9331_port_vlan_prepare(struct dsa_switch *ds, int port,
+				    const struct switchdev_obj_port_vlan *vlan)
+{
+	return 0;
+}
+
+static void ar9344_port_vlan_add(struct dsa_switch *ds, int port,
+				 const struct switchdev_obj_port_vlan *vlan)
+{
+	struct ar9331_sw_priv *priv = (struct ar9331_sw_priv *)ds->priv;
+	bool untagged = vlan->flags & BRIDGE_VLAN_INFO_UNTAGGED;
+	bool pvid = vlan->flags & BRIDGE_VLAN_INFO_PVID;
+	struct regmap *regmap = priv->regmap;
+	int ret;
+	u16 vid;
+
+	/* We only support a single untagged VLAN matching the PVID. */
+	if (pvid != untagged) {
+		ret = -ENOSYS;
+		goto error;
+	}
+
+	for (vid = vlan->vid_begin; vid <= vlan->vid_end; ++vid) {
+		ret = ar9331_vlan_add(priv, port, vid, untagged);
+		if (ret)
+			goto error;
+	}
+
+	if (pvid) {
+		ret = regmap_update_bits(regmap,
+					 AR9344_SW_REG_PORT_VLAN1(port),
+					 AR9344_SW_PORT_VLAN_PORT_CVID_M,
+					 AR9344_SW_PORT_VLAN_PORT_CVID(vlan->vid_end));
+		if (ret)
+			goto error;
+	}
+
+	ret = regmap_update_bits(regmap,
+				 AR9331_SW_REG_PORT_CTRL(port),
+				 AR9344_SW_PORT_CTRL_EG_VLAN_MODE,
+				 FIELD_PREP(AR9344_SW_PORT_CTRL_EG_VLAN_MODE, pvid ? 1 : 2));
+
+error:
+	if (ret)
+		dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
+}
+
+static int ar9331_port_vlan_del(struct dsa_switch *ds, int port,
+				const struct switchdev_obj_port_vlan *vlan)
+{
+	struct ar9331_sw_priv *priv = (struct ar9331_sw_priv *)ds->priv;
+	int ret;
+	u16 vid;
+
+	for (vid = vlan->vid_begin; vid <= vlan->vid_end; ++vid) {
+		ret = ar9331_vlan_del(priv, port, vid);
+		if (ret)
+			goto error;
+	}
+
+error:
+	if (ret)
+		dev_err(priv->dev, "Failed to delete VLAN from port %d (%d)", port, ret);
+
+	return ret;
+}
+
 
 static void ar9331_sw_phylink_validate(struct dsa_switch *ds, int port,
 				       unsigned long *supported,
@@ -666,6 +932,10 @@ static const struct dsa_switch_ops ar9344_sw_ops = {
 	.port_disable		= ar9331_sw_port_disable,
 	.port_bridge_join	= ar9344_port_bridge_join,
 	.port_bridge_leave	= ar9344_port_bridge_leave,
+	.port_vlan_filtering	= ar9344_port_vlan_filtering,
+	.port_vlan_prepare	= ar9331_port_vlan_prepare,
+	.port_vlan_add		= ar9344_port_vlan_add,
+	.port_vlan_del		= ar9331_port_vlan_del,
 	.phylink_validate	= ar9331_sw_phylink_validate,
 	.phylink_mac_config	= ar9331_sw_phylink_mac_config,
 	.phylink_mac_link_down	= ar9331_sw_phylink_mac_link_down,
