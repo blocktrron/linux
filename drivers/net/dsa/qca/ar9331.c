@@ -69,6 +69,29 @@
 #define AR9331_SW_REG_GLOBAL_CTRL		0x30
 #define AR9331_SW_GLOBAL_CTRL_MFS_M		GENMASK(13, 0)
 
+#define AR9331_SW_REG_AT(_id)		(0x50 + (_id) * 4)
+#define AR9331_SW_AT0_ADDR_BYTE_4	GENMASK(31, 24)
+#define AR9331_SW_AT0_ADDR_BYTE_5	GENMASK(23, 16)
+#define AR9331_SW_AT0_FULL		BIT(12)
+#define AR9331_SW_AT0_BUSY		BIT(3)
+#define AR9331_SW_AT0_FUNC		GENMASK(2, 0)
+
+#define AR9331_SW_REG_AT_CTRL		0x5c
+#define AR9331_SW_AT_CTRL_LEARN_CHANGE	BIT(18)
+#define AR9331_SW_AT_CTRL_AGING		BIT(17)
+#define AR9331_SW_AT_CTRL_AGE_TIME	GENMASK(15, 0)
+
+#define AR9331_SW_AT1_ADDR_BYTE_0	GENMASK(31, 24)
+#define AR9331_SW_AT1_ADDR_BYTE_1	GENMASK(23, 16)
+#define AR9331_SW_AT1_ADDR_BYTE_2	GENMASK(15, 8)
+#define AR9331_SW_AT1_ADDR_BYTE_3	GENMASK(7, 0)
+
+#define AR9331_SW_AT2_AT_STATUS		GENMASK(19, 16)
+#define AR9331_SW_AT2_REDIRECT_TO_CPU	BIT(25)
+#define AR9331_SW_AT2_DES_PORT		GENMASK(6, 0)
+
+#define AR9331_SW_AT3_AGE_TIME		GENMASK(15, 0)
+
 #define AR9331_SW_REG_CPU_PORT			0x78
 #define AR9344_SW_CPU_PORT_CPU_EN		BIT(8)
 
@@ -172,6 +195,26 @@
 /* Empirical determined values */
 #define AR9331_SW_MDIO_POLL_SLEEP_US		10
 #define AR9331_SW_MDIO_POLL_TIMEOUT_US		100
+
+#define AR9331_SW_AT_POLL_SLEEP_US		10
+#define AR9331_SW_AT_POLL_TIMEOUT_US		100
+
+
+enum ar9331_fdb_cmd {
+	AR9331_FDB_NOP = 0,
+	AR9331_FDB_FLUSH = 1,
+	AR9331_FDB_LOAD = 2,
+	AR9331_FDB_PURGE = 3,
+	AR9331_FDB_NEXT = 6,
+	AR9331_FDB_SEARCH = 7,
+};
+
+struct ar9331_fdb {
+	u16 vid;
+	u8 port_mask;
+	u8 aging;
+	u8 mac[6];
+};
 
 struct ar9331_sw_priv {
 	struct device *dev;
@@ -406,6 +449,13 @@ static int ar9344_sw_setup(struct dsa_switch *ds)
 	if (ret)
 		goto error;
 
+	ret = regmap_write(regmap, AR9331_SW_REG_AT_CTRL,
+			  FIELD_PREP(AR9331_SW_AT_CTRL_AGE_TIME, 0x2b) | /* 5 min age time */
+			  AR9331_SW_AT_CTRL_LEARN_CHANGE |
+			  AR9331_SW_AT_CTRL_AGING);
+	if (ret)
+		goto error;
+
 	/* Setup connection between CPU port & user ports */
 	for (i = 0; i < AR9331_SW_PORTS; i++) {
 		/* Enable Port-based VLAN */
@@ -458,6 +508,152 @@ static enum dsa_tag_protocol ar9344_sw_get_tag_protocol(struct dsa_switch *ds,
 							enum dsa_tag_protocol m)
 {
 	return DSA_TAG_PROTO_AR9344;
+}
+
+static void ar9331_fdb_read(struct ar9331_sw_priv *priv, struct ar9331_fdb *fdb)
+{
+	struct regmap *regmap = priv->regmap;
+	u32 reg[3];
+	int ret;
+	int i;
+
+	/* load the ARL table into an array */
+	for (i = 0; i < 3; i++) {
+		ret = regmap_read(regmap, AR9331_SW_REG_AT(i), &reg[i]);
+		if (ret) {
+			dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
+			return;
+		}
+	}
+
+	/* ARL does not support tracking the VLAN */
+	fdb->vid = 0;
+	/* aging - 67:64 */
+	fdb->aging = FIELD_GET(AR9331_SW_AT2_AT_STATUS, reg[2]);
+	/* portmask - 54:48 */
+	fdb->port_mask = FIELD_GET(AR9331_SW_AT2_DES_PORT, reg[2]);
+	/* mac - 47:0 */
+	fdb->mac[0] = FIELD_GET(AR9331_SW_AT1_ADDR_BYTE_0, reg[1]);
+	fdb->mac[1] = FIELD_GET(AR9331_SW_AT1_ADDR_BYTE_1, reg[1]);
+	fdb->mac[2] = FIELD_GET(AR9331_SW_AT1_ADDR_BYTE_2, reg[1]);
+	fdb->mac[3] = FIELD_GET(AR9331_SW_AT1_ADDR_BYTE_3, reg[1]);
+	fdb->mac[4] = FIELD_GET(AR9331_SW_AT0_ADDR_BYTE_4, reg[0]);
+	fdb->mac[5] = FIELD_GET(AR9331_SW_AT0_ADDR_BYTE_5, reg[0]);
+}
+
+static void ar9331_fdb_write(struct ar9331_sw_priv *priv, u8 port_mask, const u8 *mac,
+			     u8 aging)
+{
+	struct regmap *regmap = priv->regmap;
+	u32 reg[3] = { 0 };
+	int ret;
+	int i;
+
+	reg[2] |= FIELD_PREP(AR9331_SW_AT2_AT_STATUS, aging);
+	reg[2] |= FIELD_PREP(AR9331_SW_AT2_DES_PORT, port_mask);
+	reg[1] |= FIELD_PREP(AR9331_SW_AT1_ADDR_BYTE_0, mac[0]);
+	reg[1] |= FIELD_PREP(AR9331_SW_AT1_ADDR_BYTE_1, mac[1]);
+	reg[1] |= FIELD_PREP(AR9331_SW_AT1_ADDR_BYTE_2, mac[2]);
+	reg[1] |= FIELD_PREP(AR9331_SW_AT1_ADDR_BYTE_3, mac[3]);
+	reg[0] |= FIELD_PREP(AR9331_SW_AT0_ADDR_BYTE_4, mac[4]);
+	reg[0] |= FIELD_PREP(AR9331_SW_AT0_ADDR_BYTE_5, mac[5]);
+
+	/* load the array into the ARL table */
+	for (i = 0; i < 3; i++) {
+		ret = regmap_write(regmap, AR9331_SW_REG_AT(i), reg[i]);
+		if (ret)
+			break;
+	}
+
+	if (ret)
+		dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
+}
+
+static int ar9331_fdb_access(struct ar9331_sw_priv *priv, enum ar9331_fdb_cmd cmd)
+{
+	struct regmap *regmap = priv->regmap;
+	u32 reg;
+	int ret;
+
+	regmap_read(regmap, AR9331_SW_REG_AT(0), &reg);
+
+	/* Set the command and FDB index */
+	reg |= AR9331_SW_AT0_BUSY;
+	reg &= ~AR9331_SW_AT0_FUNC;
+	reg |= FIELD_PREP(AR9331_SW_AT0_FUNC, cmd);
+
+	/* Write the ATU register 0 triggering the table access */
+	ret = regmap_write(regmap, AR9331_SW_REG_AT(0), reg);
+	if (ret)
+		goto error;
+
+	/* wait for completion */
+	ret = regmap_read_poll_timeout(regmap, AR9331_SW_REG_AT(0), reg,
+				       !(reg & AR9331_SW_AT0_BUSY),
+				       AR9331_SW_AT_POLL_SLEEP_US,
+				       AR9331_SW_AT_POLL_TIMEOUT_US);	
+	if (ret)
+		goto error;
+
+	/* Check for table full violation when adding an entry */
+	if (cmd == AR9331_FDB_LOAD) {
+		ret = regmap_read(regmap, AR9331_SW_REG_AT(0), &reg);
+		if (ret)
+			goto error;
+
+		if (reg & AR9331_SW_AT0_FULL)
+			ret = -ENOMEM;
+	}
+error:
+	if (ret)
+		dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
+	return ret;
+}
+
+static int ar9331_fdb_next(struct ar9331_sw_priv *priv, struct ar9331_fdb *fdb)
+{
+	int ret;
+
+	ar9331_fdb_write(priv, fdb->port_mask, fdb->mac, fdb->aging);
+	ret = ar9331_fdb_access(priv, AR9331_FDB_NEXT);
+	if (ret)
+		goto error;
+	ar9331_fdb_read(priv, fdb);
+
+error:
+	if (ret)
+		dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
+
+	return ret;
+}
+
+static int ar9331_port_fdb_dump(struct dsa_switch *ds, int port,
+				dsa_fdb_dump_cb_t *cb, void *data)
+{
+	struct ar9331_sw_priv *priv = (struct ar9331_sw_priv *)ds->priv;
+	int cnt = 2048;
+	struct ar9331_fdb _fdb = { 0 };
+	bool is_static;
+	int ret = 0;
+
+	while (cnt-- && !ar9331_fdb_next(priv, &_fdb)) {
+		if (!_fdb.aging)
+			break;
+		if (!(_fdb.port_mask & BIT(port)))
+			continue;
+			pr_warn("PORT %d - MAC %02x:%02x:%02x:%02x:%02x:%02x", _fdb.port_mask, _fdb.mac[0], _fdb.mac[1], _fdb.mac[2], _fdb.mac[3], _fdb.mac[4], _fdb.mac[5]);
+		is_static = (_fdb.aging == 0xf);
+		ret = cb(_fdb.mac, _fdb.vid, is_static, data);
+		if (ret)
+			goto error;
+	}
+
+	pr_warn("Count %d entries in the ARL table", cnt);
+
+error:
+	if (ret)
+		dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
+	return ret;
 }
 
 static int ar9344_port_bridge_join(struct dsa_switch *ds, int port,
@@ -669,6 +865,7 @@ static const struct dsa_switch_ops ar9344_sw_ops = {
 	.port_disable		= ar9331_sw_port_disable,
 	.port_bridge_join	= ar9344_port_bridge_join,
 	.port_bridge_leave	= ar9344_port_bridge_leave,
+	.port_fdb_dump		= ar9331_port_fdb_dump,
 	.phylink_validate	= ar9331_sw_phylink_validate,
 	.phylink_mac_config	= ar9331_sw_phylink_mac_config,
 	.phylink_mac_link_down	= ar9331_sw_phylink_mac_link_down,
