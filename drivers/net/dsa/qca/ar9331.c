@@ -196,8 +196,8 @@
 #define AR9331_SW_MDIO_POLL_SLEEP_US		10
 #define AR9331_SW_MDIO_POLL_TIMEOUT_US		100
 
-#define AR9331_SW_AT_POLL_SLEEP_US		10
-#define AR9331_SW_AT_POLL_TIMEOUT_US		100
+#define AR9331_SW_AT_POLL_SLEEP_US		1000
+#define AR9331_SW_AT_POLL_TIMEOUT_US		5000
 
 
 enum ar9331_fdb_cmd {
@@ -225,6 +225,7 @@ struct ar9331_sw_priv {
 	struct mii_bus *sbus; /* mdio slave */
 	struct regmap *regmap;
 	struct reset_control *sw_reset;
+	struct mutex reg_mutex;
 };
 
 /* Warning: switch reset will reset last AR9331_SW_MDIO_PHY_MODE_PAGE request
@@ -510,23 +511,52 @@ static enum dsa_tag_protocol ar9344_sw_get_tag_protocol(struct dsa_switch *ds,
 	return DSA_TAG_PROTO_AR9344;
 }
 
-static void ar9331_fdb_read(struct ar9331_sw_priv *priv, struct ar9331_fdb *fdb)
+static int wait_atu_ready(struct ar9331_sw_priv *priv)
 {
 	struct regmap *regmap = priv->regmap;
-	u32 reg[3];
+	u32 reg;
+
+	return regmap_read_poll_timeout(regmap, AR9331_SW_REG_AT(0), reg,
+			!(reg & AR9331_SW_AT0_BUSY),
+			AR9331_SW_AT_POLL_SLEEP_US,
+			AR9331_SW_AT_POLL_TIMEOUT_US);	
+}
+
+static int ar9331_fdb_next(struct ar9331_sw_priv *priv, struct ar9331_fdb *fdb)
+{
+	struct regmap *regmap = priv->regmap;
+	u32 reg[3] = { 0 };
 	int ret;
 	int i;
 
-	/* load the ARL table into an array */
-	for (i = 0; i < 3; i++) {
-		ret = regmap_read(regmap, AR9331_SW_REG_AT(i), &reg[i]);
-		if (ret) {
-			dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
-			return;
-		}
+	ret = wait_atu_ready(priv);
+	if (ret)
+		goto error;
+
+	if (!fdb->aging) {
+		/* Clear only for the first entry */
+		reg[0] = FIELD_PREP(AR9331_SW_AT0_FUNC, AR9331_FDB_NEXT);
+		regmap_write(regmap, AR9331_SW_REG_AT(0), reg[0]);
+		regmap_write(regmap, AR9331_SW_REG_AT(2), reg[2]);
+		regmap_write(regmap, AR9331_SW_REG_AT(1), reg[1]);
 	}
 
-	/* ARL does not support tracking the VLAN */
+	regmap_write_bits(regmap, AR9331_SW_REG_AT(0),
+			  AR9331_SW_AT0_BUSY,
+			  AR9331_SW_AT0_BUSY);
+
+
+	usleep_range(10000, 20000);
+	ret = wait_atu_ready(priv);
+	if (ret)
+		goto error;
+
+	for (i = 0; i < 3; i++) {
+		ret = regmap_read(regmap, AR9331_SW_REG_AT(i), &reg[i]);
+		if (ret)
+			goto error;
+	}
+
 	fdb->vid = 0;
 	/* aging - 67:64 */
 	fdb->aging = FIELD_GET(AR9331_SW_AT2_AT_STATUS, reg[2]);
@@ -539,86 +569,8 @@ static void ar9331_fdb_read(struct ar9331_sw_priv *priv, struct ar9331_fdb *fdb)
 	fdb->mac[3] = FIELD_GET(AR9331_SW_AT1_ADDR_BYTE_3, reg[1]);
 	fdb->mac[4] = FIELD_GET(AR9331_SW_AT0_ADDR_BYTE_4, reg[0]);
 	fdb->mac[5] = FIELD_GET(AR9331_SW_AT0_ADDR_BYTE_5, reg[0]);
-}
 
-static void ar9331_fdb_write(struct ar9331_sw_priv *priv, u8 port_mask, const u8 *mac,
-			     u8 aging)
-{
-	struct regmap *regmap = priv->regmap;
-	u32 reg[3] = { 0 };
-	int ret;
-	int i;
-
-	reg[2] |= FIELD_PREP(AR9331_SW_AT2_AT_STATUS, aging);
-	reg[2] |= FIELD_PREP(AR9331_SW_AT2_DES_PORT, port_mask);
-	reg[1] |= FIELD_PREP(AR9331_SW_AT1_ADDR_BYTE_0, mac[0]);
-	reg[1] |= FIELD_PREP(AR9331_SW_AT1_ADDR_BYTE_1, mac[1]);
-	reg[1] |= FIELD_PREP(AR9331_SW_AT1_ADDR_BYTE_2, mac[2]);
-	reg[1] |= FIELD_PREP(AR9331_SW_AT1_ADDR_BYTE_3, mac[3]);
-	reg[0] |= FIELD_PREP(AR9331_SW_AT0_ADDR_BYTE_4, mac[4]);
-	reg[0] |= FIELD_PREP(AR9331_SW_AT0_ADDR_BYTE_5, mac[5]);
-
-	/* load the array into the ARL table */
-	for (i = 0; i < 3; i++) {
-		ret = regmap_write(regmap, AR9331_SW_REG_AT(i), reg[i]);
-		if (ret)
-			break;
-	}
-
-	if (ret)
-		dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
-}
-
-static int ar9331_fdb_access(struct ar9331_sw_priv *priv, enum ar9331_fdb_cmd cmd)
-{
-	struct regmap *regmap = priv->regmap;
-	u32 reg;
-	int ret;
-
-	regmap_read(regmap, AR9331_SW_REG_AT(0), &reg);
-
-	/* Set the command and FDB index */
-	reg |= AR9331_SW_AT0_BUSY;
-	reg &= ~AR9331_SW_AT0_FUNC;
-	reg |= FIELD_PREP(AR9331_SW_AT0_FUNC, cmd);
-
-	/* Write the ATU register 0 triggering the table access */
-	ret = regmap_write(regmap, AR9331_SW_REG_AT(0), reg);
-	if (ret)
-		goto error;
-
-	/* wait for completion */
-	ret = regmap_read_poll_timeout(regmap, AR9331_SW_REG_AT(0), reg,
-				       !(reg & AR9331_SW_AT0_BUSY),
-				       AR9331_SW_AT_POLL_SLEEP_US,
-				       AR9331_SW_AT_POLL_TIMEOUT_US);	
-	if (ret)
-		goto error;
-
-	/* Check for table full violation when adding an entry */
-	if (cmd == AR9331_FDB_LOAD) {
-		ret = regmap_read(regmap, AR9331_SW_REG_AT(0), &reg);
-		if (ret)
-			goto error;
-
-		if (reg & AR9331_SW_AT0_FULL)
-			ret = -ENOMEM;
-	}
-error:
-	if (ret)
-		dev_err_ratelimited(priv->dev, "%s: %i\n", __func__, ret);
-	return ret;
-}
-
-static int ar9331_fdb_next(struct ar9331_sw_priv *priv, struct ar9331_fdb *fdb)
-{
-	int ret;
-
-	ar9331_fdb_write(priv, fdb->port_mask, fdb->mac, fdb->aging);
-	ret = ar9331_fdb_access(priv, AR9331_FDB_NEXT);
-	if (ret)
-		goto error;
-	ar9331_fdb_read(priv, fdb);
+	pr_warn("R0 %08x R1 %08x R2 %08x", reg[0], reg[1], reg[2]);
 
 error:
 	if (ret)
@@ -631,22 +583,26 @@ static int ar9331_port_fdb_dump(struct dsa_switch *ds, int port,
 				dsa_fdb_dump_cb_t *cb, void *data)
 {
 	struct ar9331_sw_priv *priv = (struct ar9331_sw_priv *)ds->priv;
-	int cnt = 2048;
+	int cnt = 16;
 	struct ar9331_fdb _fdb = { 0 };
 	bool is_static;
 	int ret = 0;
 
-	while (cnt-- && !ar9331_fdb_next(priv, &_fdb)) {
+	mutex_lock(&priv->reg_mutex);
+
+	while (cnt > 0 && !ar9331_fdb_next(priv, &_fdb)) {
+		cnt--;
 		if (!_fdb.aging)
 			break;
 		if (!(_fdb.port_mask & BIT(port)))
 			continue;
-			pr_warn("PORT %d - MAC %02x:%02x:%02x:%02x:%02x:%02x", _fdb.port_mask, _fdb.mac[0], _fdb.mac[1], _fdb.mac[2], _fdb.mac[3], _fdb.mac[4], _fdb.mac[5]);
 		is_static = (_fdb.aging == 0xf);
 		ret = cb(_fdb.mac, _fdb.vid, is_static, data);
 		if (ret)
 			goto error;
 	}
+
+	mutex_unlock(&priv->reg_mutex);
 
 	pr_warn("Count %d entries in the ARL table", cnt);
 
@@ -1173,6 +1129,8 @@ static int ar9331_sw_probe(struct mdio_device *mdiodev)
 	priv = devm_kzalloc(&mdiodev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
+
+	mutex_init(&priv->reg_mutex);
 
 	priv->regmap = devm_regmap_init(&mdiodev->dev, &ar9331_sw_bus, priv,
 					&ar9331_mdio_regmap_config);
