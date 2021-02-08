@@ -17,12 +17,13 @@ properties:
     const: qca,ar7100-usb-phy
 
   resets:
-    maxItems: 2
+    maxItems: 3
 
   reset-names:
     items:
       - const: phy
       - const: suspend-override
+      - const: analog
 
 required:
   - "#phy-cells"

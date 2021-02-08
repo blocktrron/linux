@@ -12,6 +12,7 @@
 
 struct ath79_usb_phy {
 	struct reset_control *reset;
+	struct reset_control *analog_reset;
 	/* The suspend override logic is inverted, hence the no prefix
 	 * to make the code a bit easier to understand.
 	 */
@@ -29,9 +30,21 @@ static int ath79_usb_phy_power_on(struct phy *phy)
 			return err;
 	}
 
+	if (priv->analog_reset) {
+		err = reset_control_deassert(priv->analog_reset);
+		if (err) {
+			reset_control_deassert(priv->no_suspend_override);
+			return err;
+		}
+	}
+
 	err = reset_control_deassert(priv->reset);
-	if (err && priv->no_suspend_override)
-		reset_control_deassert(priv->no_suspend_override);
+	if (err) {
+		if (priv->no_suspend_override)
+			reset_control_deassert(priv->no_suspend_override);
+		if (priv->analog_reset)
+			reset_control_assert(priv->analog_reset);
+	}
 
 	return err;
 }
@@ -45,10 +58,20 @@ static int ath79_usb_phy_power_off(struct phy *phy)
 	if (err)
 		return err;
 
-	if (priv->no_suspend_override) {
-		err = reset_control_deassert(priv->no_suspend_override);
+	if (priv->analog_reset) {
+		err = reset_control_assert(priv->analog_reset);
 		if (err)
 			reset_control_deassert(priv->reset);
+	}
+
+
+	if (priv->no_suspend_override) {
+		err = reset_control_deassert(priv->no_suspend_override);
+		if (err) {
+			if (priv->analog_reset)
+				reset_control_deassert(priv->analog_reset);
+			reset_control_deassert(priv->reset);
+		}
 	}
 
 	return err;
@@ -77,6 +100,11 @@ static int ath79_usb_phy_probe(struct platform_device *pdev)
 		&pdev->dev, "usb-suspend-override");
 	if (IS_ERR(priv->no_suspend_override))
 		return PTR_ERR(priv->no_suspend_override);
+
+	priv->analog_reset = devm_reset_control_get_optional(
+		&pdev->dev, "analog");
+	if (IS_ERR(priv->analog_reset))
+		return PTR_ERR(priv->analog_reset);
 
 	phy = devm_phy_create(&pdev->dev, NULL, &ath79_usb_phy_ops);
 	if (IS_ERR(phy))
