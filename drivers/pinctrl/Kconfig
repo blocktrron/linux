@@ -119,6 +119,7 @@ config PINCTRL_AW9523
 	select GENERIC_PINCONF
 	select GPIOLIB
 	select GPIOLIB_IRQCHIP
+	select OF_GPIO
 	select REGMAP
 	select REGMAP_I2C
 	help
