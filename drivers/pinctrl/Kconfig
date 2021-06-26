@@ -112,7 +112,7 @@ config PINCTRL_AMD
 	  device.
 
 config PINCTRL_AW9523
-	bool "Awinic AW9523/AW9523B I2C GPIO expander pinctrl driver"
+	tristate "Awinic AW9523/AW9523B I2C GPIO expander pinctrl driver"
 	depends on OF && I2C
 	select PINMUX
 	select PINCONF
