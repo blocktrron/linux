@@ -385,14 +385,6 @@ static const struct pinconf_ops aw9523_pinconf_ops = {
 	.is_generic = true,
 };
 
-/*
- * aw9523_get_pin_direction - Get pin direction
- * @regmap: Regmap structure
- * @pin: gpiolib pin number
- * @n:   pin index in port register
- *
- * Return: Pin direction for success or negative number for error
- */
 static int aw9523_get_pin_direction(struct regmap *regmap, u8 pin, u8 n)
 {
 	int ret;
@@ -404,15 +396,6 @@ static int aw9523_get_pin_direction(struct regmap *regmap, u8 pin, u8 n)
 	return ret ? GPIO_LINE_DIRECTION_IN : GPIO_LINE_DIRECTION_OUT;
 }
 
-/*
- * aw9523_get_port_state - Get input or output state for entire port
- * @regmap: Regmap structure
- * @pin:    gpiolib pin number
- * @regbit: hw pin index, used to retrieve port number
- * @state:  returned port state
- *
- * Return: Zero for success or negative number for error
- */
 static int aw9523_get_port_state(struct regmap *regmap, u8 pin,
 				   u8 regbit, unsigned int *state)
 {
@@ -442,13 +425,6 @@ static int aw9523_gpio_irq_type(struct irq_data *d, unsigned int type)
 	};
 }
 
-/*
- * aw9523_irq_mask - Mask interrupt
- * @d: irq data
- *
- * Sets which interrupt to mask in the bitmap;
- * The interrupt will be masked when unlocking the irq bus.
- */
 static void aw9523_irq_mask(struct irq_data *d)
 {
 	struct aw9523 *awi = gpiochip_get_data(irq_data_get_irq_chip_data(d));
@@ -459,13 +435,6 @@ static void aw9523_irq_mask(struct irq_data *d)
 			   BIT(n), BIT(n));
 }
 
-/*
- * aw9523_irq_unmask - Unmask interrupt
- * @d: irq data
- *
- * Sets which interrupt to unmask in the bitmap;
- * The interrupt will be masked when unlocking the irq bus.
- */
 static void aw9523_irq_unmask(struct irq_data *d)
 {
 	struct aw9523 *awi = gpiochip_get_data(irq_data_get_irq_chip_data(d));
@@ -513,10 +482,6 @@ static irqreturn_t aw9523_irq_thread_func(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-/*
- * aw9523_irq_bus_lock - Grab lock for interrupt operation
- * @d: irq data
- */
 static void aw9523_irq_bus_lock(struct irq_data *d)
 {
 	struct aw9523 *awi = gpiochip_get_data(irq_data_get_irq_chip_data(d));
@@ -525,13 +490,6 @@ static void aw9523_irq_bus_lock(struct irq_data *d)
 	regcache_cache_only(awi->regmap, true);
 }
 
-/*
- * aw9523_irq_bus_sync_unlock - Synchronize state and unlock
- * @d: irq data
- *
- * Writes the interrupt mask bits (found in the bit map) to the
- * hardware, then unlocks the bus.
- */
 static void aw9523_irq_bus_sync_unlock(struct irq_data *d)
 {
 	struct aw9523 *awi = gpiochip_get_data(irq_data_get_irq_chip_data(d));
@@ -571,15 +529,6 @@ static int aw9523_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	return !!(val & BIT(regbit));
 }
 
-/**
- * _aw9523_gpio_get_multiple - Get I/O state for an entire port
- * @regmap: Regmap structure
- * @pin: gpiolib pin number
- * @regbit: hw pin index, used to retrieve port number
- * @state: returned port I/O state
- *
- * Return: Zero for success or negative number for error
- */
 static int _aw9523_gpio_get_multiple(struct aw9523 *awi, u8 regbit,
 				     u8 *state, u8 mask)
 {
