@@ -57,6 +57,9 @@
 #define AR9331_SW_REG_PAGE			0x40000
 
 /* Global Interrupt */
+#define AR9344_SW_REG_OPMODE1			0x8
+#define AR9331_SW_OPMODE1_PHY4_MII_EN		BIT(28)
+
 #define AR9331_SW_REG_GINT			0x10
 #define AR9331_SW_REG_GINT_MASK			0x14
 #define AR9331_SW_GINT_PHY_INT			BIT(2)
@@ -582,7 +585,14 @@ static int ar9344_sw_setup(struct dsa_switch *ds)
 			if (ret)
 				goto error;
 		}
+
+		/* Set port down */
+		ar9331_sw_port_disable(ds, i);
 	}
+
+	/* Enable PHY4 MII Link to CPU */
+	regmap_update_bits(regmap, AR9344_SW_REG_OPMODE1, AR9331_SW_OPMODE1_PHY4_MII_EN,
+			   AR9331_SW_OPMODE1_PHY4_MII_EN);
 
 	return 0;
 error:
