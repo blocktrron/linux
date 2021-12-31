@@ -3167,6 +3167,10 @@ int spi_nor_scan(struct spi_nor *nor, const char *name,
 			nor->flags |= SNOR_F_HAS_SR_BP3_BIT6;
 	}
 
+	if (info->flags & SPI_NOR_8BIT_SR) {
+		nor->flags &= ~SNOR_F_HAS_16BIT_SR;
+	}
+
 	if (info->flags & SPI_NOR_NO_ERASE)
 		mtd->flags |= MTD_NO_ERASE;
 

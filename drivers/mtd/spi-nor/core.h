@@ -382,6 +382,7 @@ struct flash_info {
 					 * protection bits. Usually these will
 					 * power-up in a write-protected state.
 					 */
+#define SPI_NOR_8BIT_SR		BIT(23)	/* Chip has singla 8-bit SR */
 
 	const struct spi_nor_otp_organization otp_org;
 
