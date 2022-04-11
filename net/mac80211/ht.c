@@ -434,6 +434,9 @@ void ieee80211_send_delba(struct ieee80211_sub_if_data *sdata,
 	struct ieee80211_mgmt *mgmt;
 	u16 params;
 
+	if (1)
+		return;
+
 	skb = dev_alloc_skb(sizeof(*mgmt) + local->hw.extra_tx_headroom);
 	if (!skb)
 		return;
