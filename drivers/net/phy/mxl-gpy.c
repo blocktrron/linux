@@ -8,6 +8,7 @@
 
 #include <linux/module.h>
 #include <linux/bitfield.h>
+#include <linux/of.h>
 #include <linux/phy.h>
 #include <linux/netdevice.h>
 
@@ -30,6 +31,7 @@
 #define PHY_MIISTAT		0x18	/* MII state */
 #define PHY_IMASK		0x19	/* interrupt mask */
 #define PHY_ISTAT		0x1A	/* interrupt status */
+#define PHY_LED			0x1B	/* LED control */
 #define PHY_FWV			0x1E	/* firmware version */
 
 #define PHY_MIISTAT_SPD_MASK	GENMASK(2, 0)
@@ -53,9 +55,14 @@
 				 PHY_IMASK_ADSC | \
 				 PHY_IMASK_ANC)
 
+#define PHY_LED_NUM_LEDS	4
+
 #define PHY_FWV_REL_MASK	BIT(15)
 #define PHY_FWV_TYPE_MASK	GENMASK(11, 8)
 #define PHY_FWV_MINOR_MASK	GENMASK(7, 0)
+
+/* LED */
+#define VSPEC1_LED(x)		(0x1 + x)
 
 /* SGMII */
 #define VSPEC1_SGMII_CTRL	0x08
@@ -80,6 +87,32 @@ static const struct {
 	{9, 0x73},
 };
 
+static int gpy_led_write(struct phy_device *phydev)
+{
+	struct device_node *node = phydev->mdio.dev.of_node;
+	u32 led_regs[PHY_LED_NUM_LEDS];
+	int i, ret;
+
+	if (!IS_ENABLED(CONFIG_OF_MDIO))
+		return 0;
+
+	if (of_property_read_u32_array(node, "mxl,led-config", led_regs, PHY_LED_NUM_LEDS))
+		return 0;
+	
+	/* Enable LED function handling on all ports*/
+	phy_write(phydev, PHY_LED, 0xFF00);
+
+	/* Write LED register values */
+	for (i = 0; i < PHY_LED_NUM_LEDS; i++) {
+		phydev_info(phydev, "Set LED %d register 0x%04X\n", i, (u16)led_regs[i]);
+		ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, VSPEC1_LED(i), (u16)led_regs[i]);
+		if (ret < 0)
+			return ret;
+	}
+	
+	return 0;
+}
+
 static int gpy_config_init(struct phy_device *phydev)
 {
 	int ret;
@@ -91,7 +124,10 @@ static int gpy_config_init(struct phy_device *phydev)
 
 	/* Clear all pending interrupts */
 	ret = phy_read(phydev, PHY_ISTAT);
-	return ret < 0 ? ret : 0;
+	if (ret < 0)
+		return ret;
+
+	return gpy_led_write(phydev);
 }
 
 static int gpy_probe(struct phy_device *phydev)
