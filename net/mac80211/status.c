@@ -794,12 +794,6 @@ static void ieee80211_lost_packet(struct sta_info *sta,
 	unsigned long pkt_time = STA_LOST_PKT_TIME;
 	unsigned int pkt_thr = STA_LOST_PKT_THRESHOLD;
 
-	/* If driver relies on its own algorithm for station kickout, skip
-	 * mac80211 packet loss mechanism.
-	 */
-	if (ieee80211_hw_check(&sta->local->hw, REPORTS_LOW_ACK))
-		return;
-
 	/* This packet was aggregated but doesn't carry status info */
 	if ((info->flags & IEEE80211_TX_CTL_AMPDU) &&
 	    !(info->flags & IEEE80211_TX_STAT_AMPDU))
