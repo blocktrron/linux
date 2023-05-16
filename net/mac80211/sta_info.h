@@ -200,6 +200,8 @@ struct tid_ampdu_tx {
 	bool bar_pending;
 	bool amsdu;
 	u8 tid;
+
+	u16 lost_packets;
 };
 
 /**
@@ -505,6 +507,8 @@ struct ieee80211_fragment_cache {
  * @status_stats.retry_count: # of retries attempted
  * @status_stats.lost_packets: # of lost packets
  * @status_stats.last_pkt_time: timestamp of last ACKed packet
+ * @status_stats.lost_agg_packets: # of lost aggregated packets
+ * @status_stats.last_agg_pkt_time: timestamp of last ACKed packet
  * @status_stats.msdu_retries: # of MSDU retries
  * @status_stats.msdu_failed: # of failed MSDUs
  * @status_stats.last_ack: last ack timestamp (jiffies)
@@ -541,6 +545,8 @@ struct link_sta_info {
 		unsigned long retry_failed, retry_count;
 		unsigned int lost_packets;
 		unsigned long last_pkt_time;
+		unsigned int lost_agg_packets;
+		unsigned long last_agg_pkt_time;
 		u64 msdu_retries[IEEE80211_NUM_TIDS + 1];
 		u64 msdu_failed[IEEE80211_NUM_TIDS + 1];
 		unsigned long last_ack;

@@ -789,10 +789,14 @@ static void ieee80211_report_used_skb(struct ieee80211_local *local,
 #define STA_LOST_TDLS_PKT_TIME		(10*HZ) /* 10secs since last ACK */
 
 static void ieee80211_lost_packet(struct sta_info *sta,
-				  struct ieee80211_tx_info *info)
+				  struct ieee80211_tx_status *status)
 {
+	struct ieee80211_tx_info *info = status->info;
+	struct sk_buff *skb = status->skb;
+	struct ieee80211_hdr *hdr = (void *)skb->data;
 	unsigned long pkt_time = STA_LOST_PKT_TIME;
 	unsigned int pkt_thr = STA_LOST_PKT_THRESHOLD;
+	int kick = 0;
 
 	/* This packet was aggregated but doesn't carry status info */
 	if ((info->flags & IEEE80211_TX_CTL_AMPDU) &&
@@ -805,6 +809,10 @@ static void ieee80211_lost_packet(struct sta_info *sta,
 		pkt_thr = STA_LOST_PKT_THRESHOLD;
 	}
 
+	if (ieee80211_is_data_qos(hdr->frame_control)) {
+		sta->deflink.status_stats.lost_agg_packets++;
+	}
+
 	/*
 	 * If we're in TDLS mode, make sure that all STA_LOST_PKT_THRESHOLD
 	 * of the last packets were lost, and that no ACK was received in the
@@ -812,8 +820,15 @@ static void ieee80211_lost_packet(struct sta_info *sta,
 	 * mechanism.
 	 * For non-TDLS, use STA_LOST_PKT_THRESHOLD and STA_LOST_PKT_TIME
 	 */
-	if (sta->deflink.status_stats.lost_packets < pkt_thr ||
-	    !time_after(jiffies, sta->deflink.status_stats.last_pkt_time + pkt_time))
+	if (sta->deflink.status_stats.lost_packets >= pkt_thr &&
+	    time_after(jiffies, sta->deflink.status_stats.last_pkt_time + pkt_time))
+		kick = 1;
+
+	if (sta->deflink.status_stats.lost_agg_packets >= pkt_thr &&
+	    time_after(jiffies, sta->deflink.status_stats.last_agg_pkt_time + pkt_time))
+		kick = 1;
+
+	if (!kick)
 		return;
 
 	cfg80211_cqm_pktloss_notify(sta->sdata->dev, sta->sta.addr,
@@ -1103,6 +1118,7 @@ void ieee80211_tx_status_ext(struct ieee80211_hw *hw,
 	struct ieee80211_tx_info *info = status->info;
 	struct ieee80211_sta *pubsta = status->sta;
 	struct sk_buff *skb = status->skb;
+	struct ieee80211_hdr *hdr = (void *)skb->data;
 	struct sta_info *sta = NULL;
 	int rates_idx, retry_count;
 	bool acked, noack_success, ack_signal_valid;
@@ -1172,6 +1188,11 @@ void ieee80211_tx_status_ext(struct ieee80211_hw *hw,
 					ewma_avg_signal_add(&sta->deflink.status_stats.avg_ack_signal,
 							    -info->status.ack_signal);
 				}
+
+				if (ieee80211_is_data_qos(hdr->frame_control)) {
+					sta->deflink.status_stats.lost_agg_packets = 0;
+					sta->deflink.status_stats.last_agg_pkt_time = jiffies;
+				}
 			} else if (test_sta_flag(sta, WLAN_STA_PS_STA)) {
 				/*
 				 * The STA is in power save mode, so assume
@@ -1183,7 +1204,7 @@ void ieee80211_tx_status_ext(struct ieee80211_hw *hw,
 			} else if (noack_success) {
 				/* nothing to do here, do not account as lost */
 			} else {
-				ieee80211_lost_packet(sta, info);
+				ieee80211_lost_packet(sta, status);
 			}
 		}
 
