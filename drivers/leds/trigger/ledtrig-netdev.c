@@ -36,18 +36,26 @@
  *
  */
 
+struct led_netdev_ifdata {
+	char device_name[IFNAMSIZ];
+	struct net_device *net_dev;
+	unsigned int last_activity;
+};
+
 struct led_netdev_data {
 	spinlock_t lock;
 
 	struct delayed_work work;
 	struct notifier_block notifier;
 
+	struct led_netdev_ifdata *ifdata;
+	int ifdata_count;
+
 	struct led_classdev *led_cdev;
 	struct net_device *net_dev;
 
 	char device_name[IFNAMSIZ];
 	atomic_t interval;
-	unsigned int last_activity;
 
 	unsigned long mode;
 #define NETDEV_LED_LINK	0
@@ -104,39 +112,148 @@ static ssize_t device_name_show(struct device *dev,
 	return len;
 }
 
+static int device_name_next(const char **dst, const char *buf, const char *end)
+{
+	size_t s;
+	const char *p = buf;
+	const char *word;
+
+	word = NULL;
+	s = 0;
+	while (p < end) {
+		if (*p == ' ' || *p == '\n') {
+			if (word) {
+				break;
+			}
+		} else {
+			if (!word)
+				word = p;
+			s++;
+		}
+		p++;
+	}
+
+	if (!word) {
+		/* No word --> len 0*/
+		return s;
+	}
+
+	if (s > IFNAMSIZ - 1) {
+		return -EINVAL;
+	}
+
+	*dst = word;
+	return s;
+}
+
+
+/* -1: Invalid name ; >=0: Number of devices */
+static int device_names_count(const char *buf, size_t size)
+{
+	const char *t, *ptr;
+	int count = 0;
+	int len;
+
+	ptr = buf;
+	while ((len = device_name_next(&t, ptr, buf + size)) > 0) {
+		ptr = t + len;
+		count++;
+	}
+
+	if (len < 0)
+		return len;
+
+	return count;
+}
+
+static void netdevice_put_all(struct led_netdev_data *trigger_data)
+{
+	struct led_netdev_ifdata *ifdata;
+	int i;
+
+	for (i = 0; i < trigger_data->ifdata_count; i++) {
+		ifdata = &trigger_data->ifdata[i];
+
+		dev_put(ifdata->net_dev);
+		ifdata->net_dev = NULL;
+	}
+
+	kfree(trigger_data->ifdata);
+	trigger_data->ifdata = NULL;
+	trigger_data->ifdata_count = 0;
+}
+
+static void netdevice_load_all(struct device *dev, const char *buf, size_t size)
+{
+	struct led_netdev_data *trigger_data = led_trigger_get_drvdata(dev);
+	struct led_netdev_ifdata *ifdata;
+	const char *ifname, *ptr;
+	int ifname_len;
+	int i;
+
+	ptr = buf;
+	i = 0;
+	while ((ifname_len = device_name_next(&ifname, ptr, buf + size)) > 0) {
+		ifdata = &trigger_data->ifdata[i];
+
+		/* Copy ifname */
+		memcpy(ifdata->device_name, ifname, ifname_len);
+		ifdata->device_name[ifname_len] = 0;
+
+		/* Get netdev */
+		ifdata->net_dev = dev_get_by_name(&init_net, ifdata->device_name);
+
+		ptr = ifname + ifname_len;
+		i++;
+	}
+}
+
+static void netdevice_set_link_state_up(struct device *dev)
+{
+	struct led_netdev_data *trigger_data = led_trigger_get_drvdata(dev);
+	int i;
+
+	for (i = 0; i < trigger_data->ifdata_count; i++) {
+		if (!trigger_data->ifdata[i].net_dev) {
+			continue;
+		}
+
+		if (netif_carrier_ok(trigger_data->ifdata[i].net_dev)) {
+			set_bit(NETDEV_LED_MODE_LINKUP, &trigger_data->mode);
+			return;
+		}
+	}
+}
+
 static ssize_t device_name_store(struct device *dev,
 				 struct device_attribute *attr, const char *buf,
 				 size_t size)
 {
 	struct led_netdev_data *trigger_data = led_trigger_get_drvdata(dev);
+	int num_devices = device_names_count(buf, size);
 
-	if (size >= IFNAMSIZ)
+	if (num_devices < 0)
 		return -EINVAL;
 
 	cancel_delayed_work_sync(&trigger_data->work);
 
 	spin_lock_bh(&trigger_data->lock);
 
-	if (trigger_data->net_dev) {
-		dev_put(trigger_data->net_dev);
-		trigger_data->net_dev = NULL;
-	}
+	netdevice_put_all(trigger_data);
+	trigger_data->ifdata_count = num_devices;
 
-	memcpy(trigger_data->device_name, buf, size);
-	trigger_data->device_name[size] = 0;
-	if (size > 0 && trigger_data->device_name[size - 1] == '\n')
-		trigger_data->device_name[size - 1] = 0;
+	if (num_devices == 0)
+		return size;
 
-	if (trigger_data->device_name[0] != 0)
-		trigger_data->net_dev =
-		    dev_get_by_name(&init_net, trigger_data->device_name);
+	/* Allocate list */
+	trigger_data->ifdata = kzalloc(sizeof(struct led_netdev_ifdata) * num_devices, GFP_KERNEL);
+	if (!trigger_data->ifdata)
+		return -ENOMEM;
+
+	netdevice_load_all(dev, buf, size);
 
 	clear_bit(NETDEV_LED_MODE_LINKUP, &trigger_data->mode);
-	if (trigger_data->net_dev != NULL)
-		if (netif_carrier_ok(trigger_data->net_dev))
-			set_bit(NETDEV_LED_MODE_LINKUP, &trigger_data->mode);
-
-	trigger_data->last_activity = 0;
+	netdevice_set_link_state_up(dev);
 
 	set_baseline_state(trigger_data);
 	spin_unlock_bh(&trigger_data->lock);
@@ -300,44 +417,49 @@ static int netdev_trig_notify(struct notifier_block *nb,
 		netdev_notifier_info_to_dev((struct netdev_notifier_info *)dv);
 	struct led_netdev_data *trigger_data =
 		container_of(nb, struct led_netdev_data, notifier);
+	struct led_netdev_ifdata *ifdata;
+	int i;
 
 	if (evt != NETDEV_UP && evt != NETDEV_DOWN && evt != NETDEV_CHANGE
 	    && evt != NETDEV_REGISTER && evt != NETDEV_UNREGISTER
 	    && evt != NETDEV_CHANGENAME)
 		return NOTIFY_DONE;
 
-	if (!(dev == trigger_data->net_dev ||
-	      (evt == NETDEV_CHANGENAME && !strcmp(dev->name, trigger_data->device_name)) ||
-	      (evt == NETDEV_REGISTER && !strcmp(dev->name, trigger_data->device_name))))
+	for (i = 0; i < trigger_data->ifdata_count; i++) {
+		ifdata = &trigger_data->ifdata[i];
+		if (!(dev == ifdata->net_dev || (!strcmp(dev->name, ifdata->device_name) && (evt == NETDEV_CHANGENAME || evt == NETDEV_REGISTER))))
+			continue;
+
+		cancel_delayed_work_sync(&trigger_data->work);
+
+		spin_lock_bh(&trigger_data->lock);
+
+		clear_bit(NETDEV_LED_MODE_LINKUP, &trigger_data->mode);
+		switch (evt) {
+		case NETDEV_CHANGENAME:
+		case NETDEV_REGISTER:
+			if (ifdata->net_dev)
+				dev_put(ifdata->net_dev);
+			dev_hold(dev);
+			ifdata->net_dev = dev;
+			break;
+		case NETDEV_UNREGISTER:
+			dev_put(ifdata->net_dev);
+			ifdata->net_dev = NULL;
+			break;
+		case NETDEV_UP:
+		case NETDEV_CHANGE:
+			if (netif_carrier_ok(dev))
+				set_bit(NETDEV_LED_MODE_LINKUP, &trigger_data->mode);
+			break;
+		}
+
+		set_baseline_state(trigger_data);
+
+		spin_unlock_bh(&trigger_data->lock);
+
 		return NOTIFY_DONE;
-
-	cancel_delayed_work_sync(&trigger_data->work);
-
-	spin_lock_bh(&trigger_data->lock);
-
-	clear_bit(NETDEV_LED_MODE_LINKUP, &trigger_data->mode);
-	switch (evt) {
-	case NETDEV_CHANGENAME:
-	case NETDEV_REGISTER:
-		if (trigger_data->net_dev)
-			dev_put(trigger_data->net_dev);
-		dev_hold(dev);
-		trigger_data->net_dev = dev;
-		break;
-	case NETDEV_UNREGISTER:
-		dev_put(trigger_data->net_dev);
-		trigger_data->net_dev = NULL;
-		break;
-	case NETDEV_UP:
-	case NETDEV_CHANGE:
-		if (netif_carrier_ok(dev))
-			set_bit(NETDEV_LED_MODE_LINKUP, &trigger_data->mode);
-		break;
 	}
-
-	set_baseline_state(trigger_data);
-
-	spin_unlock_bh(&trigger_data->lock);
 
 	return NOTIFY_DONE;
 }
@@ -348,13 +470,16 @@ static void netdev_trig_work(struct work_struct *work)
 	struct led_netdev_data *trigger_data =
 		container_of(work, struct led_netdev_data, work.work);
 	struct rtnl_link_stats64 *dev_stats;
+	struct led_netdev_ifdata *ifdata;
 	unsigned int new_activity;
 	struct rtnl_link_stats64 temp;
 	unsigned long interval;
+	bool blink;
 	int invert;
+	int i;
 
 	/* If we dont have a device, insure we are off */
-	if (!trigger_data->net_dev) {
+	if (!trigger_data->ifdata_count) {
 		led_set_brightness(trigger_data->led_cdev, LED_OFF);
 		return;
 	}
@@ -364,14 +489,25 @@ static void netdev_trig_work(struct work_struct *work)
 	    !test_bit(NETDEV_LED_RX, &trigger_data->mode))
 		return;
 
-	dev_stats = dev_get_stats(trigger_data->net_dev, &temp);
-	new_activity =
-	    (test_bit(NETDEV_LED_TX, &trigger_data->mode) ?
-		dev_stats->tx_packets : 0) +
-	    (test_bit(NETDEV_LED_RX, &trigger_data->mode) ?
-		dev_stats->rx_packets : 0);
+	blink = false;
+	for (i = 0; i < trigger_data->ifdata_count; i++) {
+		ifdata = &trigger_data->ifdata[i];
+		if (!ifdata->net_dev)
+			continue;
+		dev_stats = dev_get_stats(ifdata->net_dev, &temp);
+		new_activity =
+		    (test_bit(NETDEV_LED_TX, &trigger_data->mode) ?
+			dev_stats->tx_packets : 0) +
+		    (test_bit(NETDEV_LED_RX, &trigger_data->mode) ?
+			dev_stats->rx_packets : 0);
+		
+		if (ifdata->last_activity != new_activity) {
+			blink = true;
+			ifdata->last_activity = new_activity;
+		}
+	}
 
-	if (trigger_data->last_activity != new_activity) {
+	if (blink) {
 		led_stop_software_blink(trigger_data->led_cdev);
 
 		invert = test_bit(NETDEV_LED_LINK, &trigger_data->mode);
@@ -382,7 +518,6 @@ static void netdev_trig_work(struct work_struct *work)
 				      &interval,
 				      &interval,
 				      invert);
-		trigger_data->last_activity = new_activity;
 	}
 
 	schedule_delayed_work(&trigger_data->work,
@@ -406,12 +541,11 @@ static int netdev_trig_activate(struct led_classdev *led_cdev)
 	INIT_DELAYED_WORK(&trigger_data->work, netdev_trig_work);
 
 	trigger_data->led_cdev = led_cdev;
-	trigger_data->net_dev = NULL;
-	trigger_data->device_name[0] = 0;
+	trigger_data->ifdata = NULL;
+	trigger_data->ifdata_count = 0;
 
 	trigger_data->mode = 0;
 	atomic_set(&trigger_data->interval, msecs_to_jiffies(50));
-	trigger_data->last_activity = 0;
 
 	led_set_trigger_data(led_cdev, trigger_data);
 
@@ -430,8 +564,7 @@ static void netdev_trig_deactivate(struct led_classdev *led_cdev)
 
 	cancel_delayed_work_sync(&trigger_data->work);
 
-	if (trigger_data->net_dev)
-		dev_put(trigger_data->net_dev);
+	netdevice_put_all(trigger_data);
 
 	kfree(trigger_data);
 }
