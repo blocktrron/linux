@@ -159,6 +159,9 @@ static bool can_hw_control(struct led_netdev_data *trigger_data)
 	if (!supports_hw_control(led_cdev))
 		return false;
 
+	/* Offloading only works if state is polled from a single netdev */
+	/* ToDO: Implement */
+
 	/*
 	 * Interval must be set to the default
 	 * value. Any different value is rejected if in hw
@@ -249,6 +252,7 @@ static int set_device_name(struct led_netdev_data *trigger_data,
 	}
 
 	trigger_data->last_activity = 0;
+	trigger_data->hw_control = can_hw_control(trigger_data);
 
 	set_baseline_state(trigger_data);
 	mutex_unlock(&trigger_data->lock);
