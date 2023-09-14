@@ -40,6 +40,12 @@
  *
  */
 
+struct led_netdev_devdata {	
+	char device_name[IFNAMSIZ];
+	struct net_device *net_dev;
+	unsigned int last_activity;
+};
+
 struct led_netdev_data {
 	struct mutex lock;
 
@@ -47,11 +53,15 @@ struct led_netdev_data {
 	struct notifier_block notifier;
 
 	struct led_classdev *led_cdev;
-	struct net_device *net_dev;
 
-	char device_name[IFNAMSIZ];
+	// struct net_device *net_dev;
+	// char device_name[IFNAMSIZ];
+	// unsigned int last_activity;
+
 	atomic_t interval;
-	unsigned int last_activity;
+
+	struct led_netdev_devdata *netdevs;
+	int num_netdevs;
 
 	unsigned long mode;
 	int link_speed;
@@ -160,7 +170,8 @@ static bool can_hw_control(struct led_netdev_data *trigger_data)
 		return false;
 
 	/* Offloading only works if state is polled from a single netdev */
-	/* ToDO: Implement */
+	if (trigger_data->num_netdevs != 1)
+		return false;
 
 	/*
 	 * Interval must be set to the default
@@ -177,7 +188,7 @@ static bool can_hw_control(struct led_netdev_data *trigger_data)
 	 * valid, the configured netdev must be the same as
 	 * netdev associated to the LED.
 	 */
-	if (!validate_net_dev(led_cdev, trigger_data->net_dev))
+	if (!validate_net_dev(led_cdev, trigger_data->netdevs[0].net_dev))
 		return false;
 
 	/* Check if the requested mode is supported */
@@ -198,11 +209,11 @@ static void get_device_state(struct led_netdev_data *trigger_data)
 {
 	struct ethtool_link_ksettings cmd;
 
-	trigger_data->carrier_link_up = netif_carrier_ok(trigger_data->net_dev);
+	trigger_data->carrier_link_up = netif_carrier_ok(trigger_data->netdevs[0].net_dev);
 	if (!trigger_data->carrier_link_up)
 		return;
 
-	if (!__ethtool_get_link_ksettings(trigger_data->net_dev, &cmd)) {
+	if (!__ethtool_get_link_ksettings(trigger_data->netdevs[0].net_dev, &cmd)) {
 		trigger_data->link_speed = cmd.base.speed;
 		trigger_data->duplex = cmd.base.duplex;
 	}
@@ -215,7 +226,7 @@ static ssize_t device_name_show(struct device *dev,
 	ssize_t len;
 
 	mutex_lock(&trigger_data->lock);
-	len = sprintf(buf, "%s\n", trigger_data->device_name);
+	len = sprintf(buf, "%s\n", trigger_data->netdevs[0].device_name);
 	mutex_unlock(&trigger_data->lock);
 
 	return len;
@@ -228,30 +239,30 @@ static int set_device_name(struct led_netdev_data *trigger_data,
 
 	mutex_lock(&trigger_data->lock);
 
-	if (trigger_data->net_dev) {
-		dev_put(trigger_data->net_dev);
-		trigger_data->net_dev = NULL;
+	if (trigger_data->netdevs[0].net_dev) {
+		dev_put(trigger_data->netdevs[0].net_dev);
+		trigger_data->netdevs[0].net_dev = NULL;
 	}
 
-	memcpy(trigger_data->device_name, name, size);
-	trigger_data->device_name[size] = 0;
-	if (size > 0 && trigger_data->device_name[size - 1] == '\n')
-		trigger_data->device_name[size - 1] = 0;
+	memcpy(trigger_data->netdevs[0].device_name, name, size);
+	trigger_data->netdevs[0].device_name[size] = 0;
+	if (size > 0 && trigger_data->netdevs[0].device_name[size - 1] == '\n')
+		trigger_data->netdevs[0].device_name[size - 1] = 0;
 
-	if (trigger_data->device_name[0] != 0)
-		trigger_data->net_dev =
-		    dev_get_by_name(&init_net, trigger_data->device_name);
+	if (trigger_data->netdevs[0].device_name[0] != 0)
+		trigger_data->netdevs[0].net_dev =
+		    dev_get_by_name(&init_net, trigger_data->netdevs[0].device_name);
 
 	trigger_data->carrier_link_up = false;
 	trigger_data->link_speed = SPEED_UNKNOWN;
 	trigger_data->duplex = DUPLEX_UNKNOWN;
-	if (trigger_data->net_dev != NULL) {
+	if (trigger_data->netdevs[0].net_dev != NULL) {
 		rtnl_lock();
 		get_device_state(trigger_data);
 		rtnl_unlock();
 	}
 
-	trigger_data->last_activity = 0;
+	trigger_data->netdevs[0].last_activity = 0;
 	trigger_data->hw_control = can_hw_control(trigger_data);
 
 	set_baseline_state(trigger_data);
@@ -449,9 +460,9 @@ static int netdev_trig_notify(struct notifier_block *nb,
 	    && evt != NETDEV_CHANGENAME)
 		return NOTIFY_DONE;
 
-	if (!(dev == trigger_data->net_dev ||
-	      (evt == NETDEV_CHANGENAME && !strcmp(dev->name, trigger_data->device_name)) ||
-	      (evt == NETDEV_REGISTER && !strcmp(dev->name, trigger_data->device_name))))
+	if (!(dev == trigger_data->netdevs[0].net_dev ||
+	      (evt == NETDEV_CHANGENAME && !strcmp(dev->name, trigger_data->netdevs[0].device_name)) ||
+	      (evt == NETDEV_REGISTER && !strcmp(dev->name, trigger_data->netdevs[0].device_name))))
 		return NOTIFY_DONE;
 
 	cancel_delayed_work_sync(&trigger_data->work);
@@ -466,13 +477,13 @@ static int netdev_trig_notify(struct notifier_block *nb,
 		get_device_state(trigger_data);
 		fallthrough;
 	case NETDEV_REGISTER:
-		dev_put(trigger_data->net_dev);
+		dev_put(trigger_data->netdevs[0].net_dev);
 		dev_hold(dev);
-		trigger_data->net_dev = dev;
+		trigger_data->netdevs[0].net_dev = dev;
 		break;
 	case NETDEV_UNREGISTER:
-		dev_put(trigger_data->net_dev);
-		trigger_data->net_dev = NULL;
+		dev_put(trigger_data->netdevs[0].net_dev);
+		trigger_data->netdevs[0].net_dev = NULL;
 		break;
 	case NETDEV_UP:
 	case NETDEV_CHANGE:
@@ -499,7 +510,7 @@ static void netdev_trig_work(struct work_struct *work)
 	int invert;
 
 	/* If we dont have a device, insure we are off */
-	if (!trigger_data->net_dev) {
+	if (!trigger_data->netdevs[0].net_dev) {
 		led_set_brightness(trigger_data->led_cdev, LED_OFF);
 		return;
 	}
@@ -509,14 +520,14 @@ static void netdev_trig_work(struct work_struct *work)
 	    !test_bit(TRIGGER_NETDEV_RX, &trigger_data->mode))
 		return;
 
-	dev_stats = dev_get_stats(trigger_data->net_dev, &temp);
+	dev_stats = dev_get_stats(trigger_data->netdevs[0].net_dev, &temp);
 	new_activity =
 	    (test_bit(TRIGGER_NETDEV_TX, &trigger_data->mode) ?
 		dev_stats->tx_packets : 0) +
 	    (test_bit(TRIGGER_NETDEV_RX, &trigger_data->mode) ?
 		dev_stats->rx_packets : 0);
 
-	if (trigger_data->last_activity != new_activity) {
+	if (trigger_data->netdevs[0].last_activity != new_activity) {
 		led_stop_software_blink(trigger_data->led_cdev);
 
 		invert = test_bit(TRIGGER_NETDEV_LINK, &trigger_data->mode) ||
@@ -532,7 +543,7 @@ static void netdev_trig_work(struct work_struct *work)
 				      &interval,
 				      &interval,
 				      invert);
-		trigger_data->last_activity = new_activity;
+		trigger_data->netdevs[0].last_activity = new_activity;
 	}
 
 	schedule_delayed_work(&trigger_data->work,
@@ -558,12 +569,13 @@ static int netdev_trig_activate(struct led_classdev *led_cdev)
 	INIT_DELAYED_WORK(&trigger_data->work, netdev_trig_work);
 
 	trigger_data->led_cdev = led_cdev;
-	trigger_data->net_dev = NULL;
-	trigger_data->device_name[0] = 0;
+
+	trigger_data->num_netdevs = 1;
+	trigger_data->netdevs = kzalloc(sizeof(struct led_netdev_devdata), GFP_KERNEL);
 
 	trigger_data->mode = 0;
 	atomic_set(&trigger_data->interval, msecs_to_jiffies(NETDEV_LED_DEFAULT_INTERVAL));
-	trigger_data->last_activity = 0;
+	trigger_data->netdevs[0].last_activity = 0;
 
 	/* Check if hw control is active by default on the LED.
 	 * Init already enabled mode in hw control.
@@ -601,7 +613,7 @@ static void netdev_trig_deactivate(struct led_classdev *led_cdev)
 
 	led_set_brightness(led_cdev, LED_OFF);
 
-	dev_put(trigger_data->net_dev);
+	dev_put(trigger_data->netdevs[0].net_dev);
 
 	kfree(trigger_data);
 }
