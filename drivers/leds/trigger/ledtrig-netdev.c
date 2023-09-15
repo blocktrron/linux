@@ -44,6 +44,10 @@ struct led_netdev_devdata {
 	char device_name[IFNAMSIZ];
 	struct net_device *net_dev;
 	unsigned int last_activity;
+
+	int link_speed;
+	u8 duplex;
+	bool carrier_link_up;
 };
 
 struct led_netdev_data {
@@ -53,21 +57,13 @@ struct led_netdev_data {
 	struct notifier_block notifier;
 
 	struct led_classdev *led_cdev;
-
-	// struct net_device *net_dev;
-	// char device_name[IFNAMSIZ];
-	// unsigned int last_activity;
-
 	atomic_t interval;
 
 	struct led_netdev_devdata *netdevs;
 	int num_netdevs;
 
 	unsigned long mode;
-	int link_speed;
-	u8 duplex;
 
-	bool carrier_link_up;
 	bool hw_control;
 };
 
@@ -89,7 +85,7 @@ static void set_baseline_state(struct led_netdev_data *trigger_data)
 	if (!led_cdev->blink_brightness)
 		led_cdev->blink_brightness = led_cdev->max_brightness;
 
-	if (!trigger_data->carrier_link_up) {
+	if (!trigger_data->netdevs[0].carrier_link_up) {
 		led_set_brightness(led_cdev, LED_OFF);
 	} else {
 		bool blink_on = false;
@@ -98,23 +94,23 @@ static void set_baseline_state(struct led_netdev_data *trigger_data)
 			blink_on = true;
 
 		if (test_bit(TRIGGER_NETDEV_LINK_10, &trigger_data->mode) &&
-		    trigger_data->link_speed == SPEED_10)
+		    trigger_data->netdevs[0].link_speed == SPEED_10)
 			blink_on = true;
 
 		if (test_bit(TRIGGER_NETDEV_LINK_100, &trigger_data->mode) &&
-		    trigger_data->link_speed == SPEED_100)
+		    trigger_data->netdevs[0].link_speed == SPEED_100)
 			blink_on = true;
 
 		if (test_bit(TRIGGER_NETDEV_LINK_1000, &trigger_data->mode) &&
-		    trigger_data->link_speed == SPEED_1000)
+		    trigger_data->netdevs[0].link_speed == SPEED_1000)
 			blink_on = true;
 
 		if (test_bit(TRIGGER_NETDEV_HALF_DUPLEX, &trigger_data->mode) &&
-		    trigger_data->duplex == DUPLEX_HALF)
+		    trigger_data->netdevs[0].duplex == DUPLEX_HALF)
 			blink_on = true;
 
 		if (test_bit(TRIGGER_NETDEV_FULL_DUPLEX, &trigger_data->mode) &&
-		    trigger_data->duplex == DUPLEX_FULL)
+		    trigger_data->netdevs[0].duplex == DUPLEX_FULL)
 			blink_on = true;
 
 		if (blink_on)
@@ -208,14 +204,19 @@ static bool can_hw_control(struct led_netdev_data *trigger_data)
 static void get_device_state(struct led_netdev_data *trigger_data)
 {
 	struct ethtool_link_ksettings cmd;
+	struct led_netdev_devdata *dev_data;
+	int i;
 
-	trigger_data->carrier_link_up = netif_carrier_ok(trigger_data->netdevs[0].net_dev);
-	if (!trigger_data->carrier_link_up)
-		return;
+	for (i = 0; i < trigger_data->num_netdevs; i++) {
+		dev_data = &trigger_data->netdevs[i];
+		dev_data->carrier_link_up = netif_carrier_ok(trigger_data->netdevs[0].net_dev);
+		if (!dev_data->carrier_link_up)
+			return;
 
-	if (!__ethtool_get_link_ksettings(trigger_data->netdevs[0].net_dev, &cmd)) {
-		trigger_data->link_speed = cmd.base.speed;
-		trigger_data->duplex = cmd.base.duplex;
+		if (!__ethtool_get_link_ksettings(trigger_data->netdevs[0].net_dev, &cmd)) {
+			dev_data->link_speed = cmd.base.speed;
+			dev_data->duplex = cmd.base.duplex;
+		}
 	}
 }
 
@@ -253,9 +254,9 @@ static int set_device_name(struct led_netdev_data *trigger_data,
 		trigger_data->netdevs[0].net_dev =
 		    dev_get_by_name(&init_net, trigger_data->netdevs[0].device_name);
 
-	trigger_data->carrier_link_up = false;
-	trigger_data->link_speed = SPEED_UNKNOWN;
-	trigger_data->duplex = DUPLEX_UNKNOWN;
+	trigger_data->netdevs[0].carrier_link_up = false;
+	trigger_data->netdevs[0].link_speed = SPEED_UNKNOWN;
+	trigger_data->netdevs[0].duplex = DUPLEX_UNKNOWN;
 	if (trigger_data->netdevs[0].net_dev != NULL) {
 		rtnl_lock();
 		get_device_state(trigger_data);
@@ -454,41 +455,46 @@ static int netdev_trig_notify(struct notifier_block *nb,
 		netdev_notifier_info_to_dev((struct netdev_notifier_info *)dv);
 	struct led_netdev_data *trigger_data =
 		container_of(nb, struct led_netdev_data, notifier);
+	struct led_netdev_devdata *dev_data;
+	int i;
 
 	if (evt != NETDEV_UP && evt != NETDEV_DOWN && evt != NETDEV_CHANGE
 	    && evt != NETDEV_REGISTER && evt != NETDEV_UNREGISTER
 	    && evt != NETDEV_CHANGENAME)
 		return NOTIFY_DONE;
-
-	if (!(dev == trigger_data->netdevs[0].net_dev ||
-	      (evt == NETDEV_CHANGENAME && !strcmp(dev->name, trigger_data->netdevs[0].device_name)) ||
-	      (evt == NETDEV_REGISTER && !strcmp(dev->name, trigger_data->netdevs[0].device_name))))
-		return NOTIFY_DONE;
-
+	
 	cancel_delayed_work_sync(&trigger_data->work);
-
 	mutex_lock(&trigger_data->lock);
+	
+	for (i = 0; i < trigger_data->num_netdevs; i++) {
+		dev_data = &trigger_data->netdevs[i];
 
-	trigger_data->carrier_link_up = false;
-	trigger_data->link_speed = SPEED_UNKNOWN;
-	trigger_data->duplex = DUPLEX_UNKNOWN;
-	switch (evt) {
-	case NETDEV_CHANGENAME:
-		get_device_state(trigger_data);
-		fallthrough;
-	case NETDEV_REGISTER:
-		dev_put(trigger_data->netdevs[0].net_dev);
-		dev_hold(dev);
-		trigger_data->netdevs[0].net_dev = dev;
-		break;
-	case NETDEV_UNREGISTER:
-		dev_put(trigger_data->netdevs[0].net_dev);
-		trigger_data->netdevs[0].net_dev = NULL;
-		break;
-	case NETDEV_UP:
-	case NETDEV_CHANGE:
-		get_device_state(trigger_data);
-		break;
+		if (!(dev == dev_data->net_dev ||
+		      (evt == NETDEV_CHANGENAME && !strcmp(dev->name, dev_data->device_name)) ||
+		      (evt == NETDEV_REGISTER && !strcmp(dev->name, dev_data->device_name))))
+			continue;
+		
+		dev_data->carrier_link_up = false;
+		dev_data->link_speed = SPEED_UNKNOWN;
+		dev_data->duplex = DUPLEX_UNKNOWN;
+		switch (evt) {
+		case NETDEV_CHANGENAME:
+			get_device_state(trigger_data);
+			fallthrough;
+		case NETDEV_REGISTER:
+			dev_put(dev_data->net_dev);
+			dev_hold(dev);
+			dev_data->net_dev = dev;
+			break;
+		case NETDEV_UNREGISTER:
+			dev_put(dev_data->net_dev);
+			dev_data->net_dev = NULL;
+			break;
+		case NETDEV_UP:
+		case NETDEV_CHANGE:
+			get_device_state(trigger_data);
+			break;
+		}
 	}
 
 	set_baseline_state(trigger_data);
@@ -510,6 +516,7 @@ static void netdev_trig_work(struct work_struct *work)
 	int invert;
 
 	/* If we dont have a device, insure we are off */
+	/* ToDo: How to check? */
 	if (!trigger_data->netdevs[0].net_dev) {
 		led_set_brightness(trigger_data->led_cdev, LED_OFF);
 		return;
