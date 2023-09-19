@@ -229,8 +229,8 @@ static ssize_t device_name_show(struct device *dev,
 
 	mutex_lock(&trigger_data->lock);
 	len = 0;
-	for (i = 0; i < trigger_data->ifdata_count; i++) {
-		len += sprintf(&buf[len], "%s ", trigger_data->ifdata[i].device_name);
+	for (i = 0; i < trigger_data->num_netdevs; i++) {
+		len += sprintf(&buf[len], "%s ", trigger_data->netdevs[i].device_name);
 	}
 
 	if (!len) {
@@ -637,6 +637,7 @@ static int netdev_trig_activate(struct led_classdev *led_cdev)
 static void netdev_trig_deactivate(struct led_classdev *led_cdev)
 {
 	struct led_netdev_data *trigger_data = led_get_trigger_data(led_cdev);
+	int i;
 
 	unregister_netdevice_notifier(&trigger_data->notifier);
 
