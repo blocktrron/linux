@@ -225,9 +225,20 @@ static ssize_t device_name_show(struct device *dev,
 {
 	struct led_netdev_data *trigger_data = led_trigger_get_drvdata(dev);
 	ssize_t len;
+	int i;
 
 	mutex_lock(&trigger_data->lock);
-	len = sprintf(buf, "%s\n", trigger_data->netdevs[0].device_name);
+	len = 0;
+	for (i = 0; i < trigger_data->ifdata_count; i++) {
+		len += sprintf(&buf[len], "%s ", trigger_data->ifdata[i].device_name);
+	}
+
+	if (!len) {
+		len = 1;
+	}
+
+	buf[len-1] = '\n';
+	buf[len] = 0;
 	mutex_unlock(&trigger_data->lock);
 
 	return len;
@@ -514,10 +525,17 @@ static void netdev_trig_work(struct work_struct *work)
 	struct rtnl_link_stats64 temp;
 	unsigned long interval;
 	int invert;
+	bool device_found;
+	int i;
 
 	/* If we dont have a device, insure we are off */
-	/* ToDo: How to check? */
-	if (!trigger_data->netdevs[0].net_dev) {
+	device_found = false;
+	for (i = 0; i < trigger_data->num_netdevs; i++) {
+		if (trigger_data->netdevs[i].net_dev)
+			device_found = true;
+	}
+
+	if (!device_found) {
 		led_set_brightness(trigger_data->led_cdev, LED_OFF);
 		return;
 	}
@@ -526,31 +544,33 @@ static void netdev_trig_work(struct work_struct *work)
 	if (!test_bit(TRIGGER_NETDEV_TX, &trigger_data->mode) &&
 	    !test_bit(TRIGGER_NETDEV_RX, &trigger_data->mode))
 		return;
+	
+	for (i = 0; i < trigger_data->num_netdevs; i++) {
+		dev_stats = dev_get_stats(trigger_data->netdevs[i].net_dev, &temp);
+		new_activity =
+			(test_bit(TRIGGER_NETDEV_TX, &trigger_data->mode) ?
+			dev_stats->tx_packets : 0) +
+			(test_bit(TRIGGER_NETDEV_RX, &trigger_data->mode) ?
+			dev_stats->rx_packets : 0);
 
-	dev_stats = dev_get_stats(trigger_data->netdevs[0].net_dev, &temp);
-	new_activity =
-	    (test_bit(TRIGGER_NETDEV_TX, &trigger_data->mode) ?
-		dev_stats->tx_packets : 0) +
-	    (test_bit(TRIGGER_NETDEV_RX, &trigger_data->mode) ?
-		dev_stats->rx_packets : 0);
+		if (trigger_data->netdevs[i].last_activity != new_activity) {
+			led_stop_software_blink(trigger_data->led_cdev);
 
-	if (trigger_data->netdevs[0].last_activity != new_activity) {
-		led_stop_software_blink(trigger_data->led_cdev);
-
-		invert = test_bit(TRIGGER_NETDEV_LINK, &trigger_data->mode) ||
-			 test_bit(TRIGGER_NETDEV_LINK_10, &trigger_data->mode) ||
-			 test_bit(TRIGGER_NETDEV_LINK_100, &trigger_data->mode) ||
-			 test_bit(TRIGGER_NETDEV_LINK_1000, &trigger_data->mode) ||
-			 test_bit(TRIGGER_NETDEV_HALF_DUPLEX, &trigger_data->mode) ||
-			 test_bit(TRIGGER_NETDEV_FULL_DUPLEX, &trigger_data->mode);
-		interval = jiffies_to_msecs(
-				atomic_read(&trigger_data->interval));
-		/* base state is ON (link present) */
-		led_blink_set_oneshot(trigger_data->led_cdev,
-				      &interval,
-				      &interval,
-				      invert);
-		trigger_data->netdevs[0].last_activity = new_activity;
+			invert = test_bit(TRIGGER_NETDEV_LINK, &trigger_data->mode) ||
+				test_bit(TRIGGER_NETDEV_LINK_10, &trigger_data->mode) ||
+				test_bit(TRIGGER_NETDEV_LINK_100, &trigger_data->mode) ||
+				test_bit(TRIGGER_NETDEV_LINK_1000, &trigger_data->mode) ||
+				test_bit(TRIGGER_NETDEV_HALF_DUPLEX, &trigger_data->mode) ||
+				test_bit(TRIGGER_NETDEV_FULL_DUPLEX, &trigger_data->mode);
+			interval = jiffies_to_msecs(
+					atomic_read(&trigger_data->interval));
+			/* base state is ON (link present) */
+			led_blink_set_oneshot(trigger_data->led_cdev,
+						&interval,
+						&interval,
+						invert);
+			trigger_data->netdevs[i].last_activity = new_activity;
+		}
 	}
 
 	schedule_delayed_work(&trigger_data->work,
@@ -563,6 +583,7 @@ static int netdev_trig_activate(struct led_classdev *led_cdev)
 	unsigned long mode = 0;
 	struct device *dev;
 	int rc;
+	int i;
 
 	trigger_data = kzalloc(sizeof(struct led_netdev_data), GFP_KERNEL);
 	if (!trigger_data)
@@ -582,7 +603,10 @@ static int netdev_trig_activate(struct led_classdev *led_cdev)
 
 	trigger_data->mode = 0;
 	atomic_set(&trigger_data->interval, msecs_to_jiffies(NETDEV_LED_DEFAULT_INTERVAL));
-	trigger_data->netdevs[0].last_activity = 0;
+
+	for (i = 0; i < trigger_data->num_netdevs; i++) {
+		trigger_data->netdevs[i].last_activity = 0;
+	}
 
 	/* Check if hw control is active by default on the LED.
 	 * Init already enabled mode in hw control.
@@ -620,8 +644,11 @@ static void netdev_trig_deactivate(struct led_classdev *led_cdev)
 
 	led_set_brightness(led_cdev, LED_OFF);
 
-	dev_put(trigger_data->netdevs[0].net_dev);
+	for (i = 0; i < trigger_data->num_netdevs; i++) {
+		dev_put(trigger_data->netdevs[i].net_dev);
+	}
 
+	kfree(trigger_data->netdevs);
 	kfree(trigger_data);
 }
 
