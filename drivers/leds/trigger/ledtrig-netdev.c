@@ -71,6 +71,9 @@ static void set_baseline_state(struct led_netdev_data *trigger_data)
 {
 	int current_brightness;
 	struct led_classdev *led_cdev = trigger_data->led_cdev;
+	bool blink_on;
+	bool link_up;
+	int i;
 
 	/* Already validated, hw control is possible with the requested mode */
 	if (trigger_data->hw_control) {
@@ -84,44 +87,47 @@ static void set_baseline_state(struct led_netdev_data *trigger_data)
 		led_cdev->blink_brightness = current_brightness;
 	if (!led_cdev->blink_brightness)
 		led_cdev->blink_brightness = led_cdev->max_brightness;
-
-	if (!trigger_data->netdevs[0].carrier_link_up) {
-		led_set_brightness(led_cdev, LED_OFF);
-	} else {
-		bool blink_on = false;
+	
+	link_up = false;
+	blink_on = false;
+	for (i = 0; i < trigger_data->num_netdevs; i++) {
+		if (!trigger_data->netdevs[i].carrier_link_up)
+			continue;
+		
+		link_up = true;
 
 		if (test_bit(TRIGGER_NETDEV_LINK, &trigger_data->mode))
 			blink_on = true;
 
 		if (test_bit(TRIGGER_NETDEV_LINK_10, &trigger_data->mode) &&
-		    trigger_data->netdevs[0].link_speed == SPEED_10)
+		    trigger_data->netdevs[i].link_speed == SPEED_10)
 			blink_on = true;
 
 		if (test_bit(TRIGGER_NETDEV_LINK_100, &trigger_data->mode) &&
-		    trigger_data->netdevs[0].link_speed == SPEED_100)
+		    trigger_data->netdevs[i].link_speed == SPEED_100)
 			blink_on = true;
 
 		if (test_bit(TRIGGER_NETDEV_LINK_1000, &trigger_data->mode) &&
-		    trigger_data->netdevs[0].link_speed == SPEED_1000)
+		    trigger_data->netdevs[i].link_speed == SPEED_1000)
 			blink_on = true;
 
 		if (test_bit(TRIGGER_NETDEV_HALF_DUPLEX, &trigger_data->mode) &&
-		    trigger_data->netdevs[0].duplex == DUPLEX_HALF)
+		    trigger_data->netdevs[i].duplex == DUPLEX_HALF)
 			blink_on = true;
 
 		if (test_bit(TRIGGER_NETDEV_FULL_DUPLEX, &trigger_data->mode) &&
-		    trigger_data->netdevs[0].duplex == DUPLEX_FULL)
+		    trigger_data->netdevs[i].duplex == DUPLEX_FULL)
 			blink_on = true;
+	}
 
-		if (blink_on)
-			led_set_brightness(led_cdev,
+	if (blink_on) {
+		led_set_brightness(led_cdev,
 					   led_cdev->blink_brightness);
-		else
-			led_set_brightness(led_cdev, LED_OFF);
+	} else {
+		led_set_brightness(led_cdev, LED_OFF);
+	}
 
-		/* If we are looking for RX/TX start periodically
-		 * checking stats
-		 */
+	if (link_up) {
 		if (test_bit(TRIGGER_NETDEV_TX, &trigger_data->mode) ||
 		    test_bit(TRIGGER_NETDEV_RX, &trigger_data->mode))
 			schedule_delayed_work(&trigger_data->work, 0);
