@@ -215,11 +215,11 @@ static void get_device_state(struct led_netdev_data *trigger_data)
 
 	for (i = 0; i < trigger_data->num_netdevs; i++) {
 		dev_data = &trigger_data->netdevs[i];
-		dev_data->carrier_link_up = netif_carrier_ok(trigger_data->netdevs[0].net_dev);
+		dev_data->carrier_link_up = netif_carrier_ok(trigger_data->netdevs[i].net_dev);
 		if (!dev_data->carrier_link_up)
 			return;
 
-		if (!__ethtool_get_link_ksettings(trigger_data->netdevs[0].net_dev, &cmd)) {
+		if (!__ethtool_get_link_ksettings(trigger_data->netdevs[i].net_dev, &cmd)) {
 			dev_data->link_speed = cmd.base.speed;
 			dev_data->duplex = cmd.base.duplex;
 		}
