@@ -67,6 +67,102 @@ struct led_netdev_data {
 	bool hw_control;
 };
 
+static void clear_netdevs(struct led_netdev_data *trigger_data)
+{
+	int i;
+
+	for (i = 0; i < trigger_data->num_netdevs; i++) {
+		dev_put(trigger_data->netdevs[i].net_dev);
+	}
+	kfree(trigger_data->netdevs);
+	trigger_data->num_netdevs = 0;
+}
+
+static int device_name_next(const char **dst, const char *buf, const char *end)
+{
+	size_t s;
+	const char *p = buf;
+	const char *word;
+
+	word = NULL;
+	s = 0;
+	while (p < end) {
+		if (*p == ' ' || *p == '\n') {
+			if (word) {
+				break;
+			}
+		} else {
+			if (!word)
+				word = p;
+			s++;
+		}
+		p++;
+	}
+
+	if (!word) {
+		/* No word --> len 0*/
+		return s;
+	}
+
+	if (s > IFNAMSIZ - 1) {
+		return -EINVAL;
+	}
+
+	*dst = word;
+	return s;
+}
+
+
+/* -1: Invalid name ; >=0: Number of devices */
+static int device_names_count(const char *buf, size_t size)
+{
+	const char *t, *ptr;
+	int count = 0;
+	int len;
+
+	ptr = buf;
+	while ((len = device_name_next(&t, ptr, buf + size)) > 0) {
+		ptr = t + len;
+		count++;
+	}
+
+	if (len < 0)
+		return len;
+
+	return count;
+}
+
+static void netdevice_load_all(struct led_netdev_data *trigger_data, const char *buf, size_t size)
+{
+	struct led_netdev_devdata *devdata;
+	const char *ifname, *ptr;
+	int ifname_len;
+	int i;
+
+	ptr = buf;
+	i = 0;
+	while ((ifname_len = device_name_next(&ifname, ptr, buf + size)) > 0) {
+		devdata = &trigger_data->netdevs[i];
+
+		/* Copy ifname */
+		memcpy(devdata->device_name, ifname, ifname_len);
+		devdata->device_name[ifname_len] = 0;
+
+		/* Get netdev */
+		devdata->net_dev = dev_get_by_name(&init_net, devdata->device_name);
+
+		devdata->carrier_link_up = false;
+		devdata->link_speed = SPEED_UNKNOWN;
+		devdata->duplex = DUPLEX_UNKNOWN;
+
+
+		ptr = ifname + ifname_len;
+		i++;
+	}
+}
+
+
+
 static void set_baseline_state(struct led_netdev_data *trigger_data)
 {
 	int current_brightness;
@@ -257,10 +353,11 @@ static int set_device_name(struct led_netdev_data *trigger_data,
 
 	mutex_lock(&trigger_data->lock);
 
-	if (trigger_data->netdevs[0].net_dev) {
-		dev_put(trigger_data->netdevs[0].net_dev);
-		trigger_data->netdevs[0].net_dev = NULL;
-	}
+	clear_netdevs(trigger_data);
+
+	/* ToDo: count netdevs */
+	trigger_data->num_netdevs = 1;
+	trigger_data->netdevs = kzalloc(sizeof(struct led_netdev_devdata) * trigger_data->num_netdevs, GFP_KERNEL);
 
 	memcpy(trigger_data->netdevs[0].device_name, name, size);
 	trigger_data->netdevs[0].device_name[size] = 0;
@@ -604,7 +701,7 @@ static int netdev_trig_activate(struct led_classdev *led_cdev)
 
 	trigger_data->led_cdev = led_cdev;
 
-	trigger_data->num_netdevs = 1;
+	trigger_data->num_netdevs = 0;
 	trigger_data->netdevs = kzalloc(sizeof(struct led_netdev_devdata), GFP_KERNEL);
 
 	trigger_data->mode = 0;
@@ -643,7 +740,6 @@ static int netdev_trig_activate(struct led_classdev *led_cdev)
 static void netdev_trig_deactivate(struct led_classdev *led_cdev)
 {
 	struct led_netdev_data *trigger_data = led_get_trigger_data(led_cdev);
-	int i;
 
 	unregister_netdevice_notifier(&trigger_data->notifier);
 
@@ -651,11 +747,8 @@ static void netdev_trig_deactivate(struct led_classdev *led_cdev)
 
 	led_set_brightness(led_cdev, LED_OFF);
 
-	for (i = 0; i < trigger_data->num_netdevs; i++) {
-		dev_put(trigger_data->netdevs[i].net_dev);
-	}
+	clear_netdevs(trigger_data);
 
-	kfree(trigger_data->netdevs);
 	kfree(trigger_data);
 }
 
