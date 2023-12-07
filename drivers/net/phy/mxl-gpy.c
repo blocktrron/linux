@@ -38,6 +38,7 @@
 #define PHY_MIISTAT		0x18	/* MII state */
 #define PHY_IMASK		0x19	/* interrupt mask */
 #define PHY_ISTAT		0x1A	/* interrupt status */
+#define PHY_LED			0x1B	/* LED control */
 #define PHY_FWV			0x1E	/* firmware version */
 
 #define PHY_MIISTAT_SPD_MASK	GENMASK(2, 0)
@@ -61,6 +62,9 @@
 				 PHY_IMASK_ADSC | \
 				 PHY_IMASK_ANC)
 
+#define PHY_LED_DA_MASK(x)	BIT(x)
+#define PHY_LED_EN_MASK(x)	BIT((x) + 8)
+
 #define PHY_FWV_REL_MASK	BIT(15)
 #define PHY_FWV_MAJOR_MASK	GENMASK(11, 8)
 #define PHY_FWV_MINOR_MASK	GENMASK(7, 0)
@@ -71,6 +75,28 @@
 #define PHY_MDI_MDI_X_AB	0x2
 #define PHY_MDI_MDI_X_CD	0x1
 #define PHY_MDI_MDI_X_CROSS	0x0
+
+/* LED Control */
+#include <linux/leds.h>
+#define VSPEC1_LED(x)		(1 + (x))
+#define VSPEC1_LED_BLINK_F_MASK	GENMASK(3, 0)
+#define VSPEC1_LED_CON_MASK	GENMASK(7, 4)
+#define VSPEC1_LED_PULSE_MASK	GENMASK(11, 8)
+#define VSPEC1_LED_BLINK_S_MASK	GENMASK(11, 8)
+
+#define VSPEC1_LED_LINK_10	BIT(0)
+#define VSPEC1_LED_LINK_100	BIT(1)
+#define VSPEC1_LED_LINK_1000	BIT(2)
+#define VSPEC1_LED_LINK_2500	BIT(3)
+#define VSPEC1_LED_LINK_ALL	(VSPEC1_LED_LINK_10 | \
+				 VSPEC1_LED_LINK_100 | \
+				 VSPEC1_LED_LINK_1000 | \
+				 VSPEC1_LED_LINK_2500)
+
+#define VSPEC1_LED_PULSE_TXACT	BIT(0)
+#define VSPEC1_LED_PULSE_RXACT	BIT(1)
+#define VSPEC1_LED_PULSE_COL	BIT(2)
+#define VSPEC1_LED_PULSE_NO_CON	BIT(3)
 
 /* SGMII */
 #define VSPEC1_SGMII_CTRL	0x08
@@ -666,6 +692,144 @@ static irqreturn_t gpy_handle_interrupt(struct phy_device *phydev)
 	return IRQ_HANDLED;
 }
 
+#define GPY_MAX_LED_IDX	3
+
+static int gpy_led_brightness_set(struct phy_device *phydev,
+				  u8 index, enum led_brightness value)
+{
+	int ret;
+
+	if (index > GPY_MAX_LED_IDX)
+		return -EINVAL;
+
+	/* Need to disable integrated function handling */
+	ret = phy_modify(phydev, PHY_LED, PHY_LED_EN_MASK(index), 0);
+	if (ret < 0)
+		return ret;
+
+	/* Set LED state */
+	return phy_modify(phydev, PHY_LED, PHY_LED_DA_MASK(index), (value != LED_OFF));
+}
+
+static const unsigned long supported_rules = BIT(TRIGGER_NETDEV_LINK) |
+					     BIT(TRIGGER_NETDEV_LINK_10) |
+					     BIT(TRIGGER_NETDEV_LINK_100) |
+					     BIT(TRIGGER_NETDEV_LINK_1000) |
+					     BIT(TRIGGER_NETDEV_TX) |
+					     BIT(TRIGGER_NETDEV_RX);
+
+static int gpy_led_hw_control_set(struct phy_device *phydev, u8 index,
+				  unsigned long rules)
+{
+	int ret;
+	u16 reg = 0;
+
+	if (index > GPY_MAX_LED_IDX)
+		return -EINVAL;
+
+	/* Disable HW control on unsupported modes */
+	if (!(rules & supported_rules))
+		return phy_clear_bits(phydev, PHY_LED, PHY_LED_EN_MASK(index));
+
+	/* Enable HW control on supported modes */
+	ret = phy_set_bits(phydev, PHY_LED, PHY_LED_EN_MASK(index));
+	if (ret)
+		return ret;
+
+	/* Link state specific to link speed */
+	if (rules & BIT(TRIGGER_NETDEV_LINK_10))
+		reg |= FIELD_PREP(VSPEC1_LED_CON_MASK, VSPEC1_LED_LINK_10);
+
+	if (rules & BIT(TRIGGER_NETDEV_LINK_100))
+		reg |= FIELD_PREP(VSPEC1_LED_CON_MASK, VSPEC1_LED_LINK_100);
+
+	if (rules & BIT(TRIGGER_NETDEV_LINK_1000))
+		reg |= FIELD_PREP(VSPEC1_LED_CON_MASK, VSPEC1_LED_LINK_1000);
+
+	/* Link state regardless of link speed */
+	if (rules & BIT(TRIGGER_NETDEV_LINK) &&
+	    !(rules & (BIT(TRIGGER_NETDEV_LINK_10) |
+	               BIT(TRIGGER_NETDEV_LINK_100) |
+	               BIT(TRIGGER_NETDEV_LINK_1000))))
+		reg |= FIELD_PREP(VSPEC1_LED_CON_MASK, VSPEC1_LED_LINK_ALL);
+
+	/* Pulse on TX */
+	if (rules & BIT(TRIGGER_NETDEV_TX))
+		reg |= FIELD_PREP(VSPEC1_LED_PULSE_MASK,
+				  VSPEC1_LED_PULSE_TXACT);
+
+	/* Pulse on RX */
+	if (rules & BIT(TRIGGER_NETDEV_RX))
+		reg |= FIELD_PREP(VSPEC1_LED_PULSE_MASK,
+				  VSPEC1_LED_PULSE_RXACT);
+
+	return phy_write_mmd(phydev, MDIO_MMD_VEND1, VSPEC1_LED(index), reg);
+}
+
+static int gpy_led_hw_control_get(struct phy_device *phydev, u8 index,
+				  unsigned long *rules)
+{
+	int reg;
+
+	if (index > GPY_MAX_LED_IDX)
+		return -EINVAL;
+
+	reg = phy_read(phydev, PHY_LED);
+	if (reg < 0)
+		return reg;
+
+	*rules = 0;
+	if (!(reg & PHY_LED_EN_MASK(index)))
+		return 0;
+
+	reg = phy_read_mmd(phydev, MDIO_MMD_VEND1, VSPEC1_LED(index));
+	if (reg < 0)
+		return reg;
+
+	/* Link state specific to link speed */
+	if (reg & FIELD_PREP(VSPEC1_LED_CON_MASK, VSPEC1_LED_LINK_10))
+		*rules |= BIT(TRIGGER_NETDEV_LINK_10);
+
+	if (reg & FIELD_PREP(VSPEC1_LED_CON_MASK, VSPEC1_LED_LINK_100))
+		*rules |= BIT(TRIGGER_NETDEV_LINK_100);
+
+	if (reg & FIELD_PREP(VSPEC1_LED_CON_MASK, VSPEC1_LED_LINK_1000))
+		*rules |= BIT(TRIGGER_NETDEV_LINK_1000);
+
+	/* Link state regardless of link speed */
+	if (reg & FIELD_PREP(VSPEC1_LED_CON_MASK, VSPEC1_LED_LINK_ALL))
+		*rules |= BIT(TRIGGER_NETDEV_LINK);
+
+	/* Pulse on TX */
+	if (reg & FIELD_PREP(VSPEC1_LED_PULSE_MASK, VSPEC1_LED_PULSE_TXACT))
+		*rules |= BIT(TRIGGER_NETDEV_TX);
+
+	/* Pulse on RX */
+	if (reg & FIELD_PREP(VSPEC1_LED_PULSE_MASK, VSPEC1_LED_PULSE_RXACT))
+		*rules |= BIT(TRIGGER_NETDEV_RX);
+
+	return 0;
+};
+
+static int gpy_led_hw_is_supported(struct phy_device *phydev, u8 index,
+				   unsigned long rules)
+{
+	if (index > GPY_MAX_LED_IDX)
+		return -EINVAL;
+
+	if (rules & ~supported_rules)
+		return -EOPNOTSUPP;
+
+	if ((rules & (BIT(TRIGGER_NETDEV_RX) | BIT(TRIGGER_NETDEV_TX))) &&
+	    !(rules & (BIT(TRIGGER_NETDEV_LINK_10) |
+		       BIT(TRIGGER_NETDEV_LINK_100) |
+		       BIT(TRIGGER_NETDEV_LINK_1000) |
+		       BIT(TRIGGER_NETDEV_LINK))))
+		return -EOPNOTSUPP;
+
+	return 0;
+};
+
 static int gpy_set_wol(struct phy_device *phydev,
 		       struct ethtool_wolinfo *wol)
 {
@@ -879,6 +1043,10 @@ static struct phy_driver gpy_drivers[] = {
 		.set_wol	= gpy_set_wol,
 		.get_wol	= gpy_get_wol,
 		.set_loopback	= gpy_loopback,
+		.led_brightness_set = gpy_led_brightness_set,
+		.led_hw_is_supported = gpy_led_hw_is_supported,
+		.led_hw_control_set = gpy_led_hw_control_set,
+		.led_hw_control_get = gpy_led_hw_control_get,
 	},
 	{
 		PHY_ID_MATCH_MODEL(PHY_ID_GPY211C),
@@ -896,6 +1064,10 @@ static struct phy_driver gpy_drivers[] = {
 		.set_wol	= gpy_set_wol,
 		.get_wol	= gpy_get_wol,
 		.set_loopback	= gpy_loopback,
+		.led_brightness_set = gpy_led_brightness_set,
+		.led_hw_is_supported = gpy_led_hw_is_supported,
+		.led_hw_control_set = gpy_led_hw_control_set,
+		.led_hw_control_get = gpy_led_hw_control_get,
 	},
 	{
 		.phy_id		= PHY_ID_GPY212B,
