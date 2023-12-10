@@ -62,6 +62,7 @@
 				 PHY_IMASK_ADSC | \
 				 PHY_IMASK_ANC)
 
+#define PHY_LED_INV(x)		BIT((x) + 12)
 #define PHY_LED_DA_MASK(x)	BIT(x)
 #define PHY_LED_EN_MASK(x)	BIT((x) + 8)
 
@@ -711,6 +712,16 @@ static int gpy_led_brightness_set(struct phy_device *phydev,
 	return phy_modify(phydev, PHY_LED, PHY_LED_DA_MASK(index), (value != LED_OFF));
 }
 
+static int gpy_led_polarity_set(struct phy_device *phydev,
+				u8 index, bool active_low)
+{
+	if (index > GPY_MAX_LED_IDX)
+		return -EINVAL;
+
+	return phy_modify(phydev, PHY_LED, PHY_LED_INV(index),
+			  active_low ? 1 : 0);
+}
+
 static const unsigned long supported_rules = BIT(TRIGGER_NETDEV_LINK) |
 					     BIT(TRIGGER_NETDEV_LINK_10) |
 					     BIT(TRIGGER_NETDEV_LINK_100) |
@@ -1044,6 +1055,7 @@ static struct phy_driver gpy_drivers[] = {
 		.get_wol	= gpy_get_wol,
 		.set_loopback	= gpy_loopback,
 		.led_brightness_set = gpy_led_brightness_set,
+		.led_polarity_set = gpy_led_polarity_set,
 		.led_hw_is_supported = gpy_led_hw_is_supported,
 		.led_hw_control_set = gpy_led_hw_control_set,
 		.led_hw_control_get = gpy_led_hw_control_get,
@@ -1065,6 +1077,7 @@ static struct phy_driver gpy_drivers[] = {
 		.get_wol	= gpy_get_wol,
 		.set_loopback	= gpy_loopback,
 		.led_brightness_set = gpy_led_brightness_set,
+		.led_polarity_set = gpy_led_polarity_set,
 		.led_hw_is_supported = gpy_led_hw_is_supported,
 		.led_hw_control_set = gpy_led_hw_control_set,
 		.led_hw_control_get = gpy_led_hw_control_get,
