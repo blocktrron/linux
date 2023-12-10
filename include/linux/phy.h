@@ -1109,6 +1109,15 @@ struct phy_driver {
 	int (*led_blink_set)(struct phy_device *dev, u8 index,
 			     unsigned long *delay_on,
 			     unsigned long *delay_off);
+
+	/**
+	 * @led_polarity_set: Set a PHY LED polarity. Index
+	 * indicates which of the PHYs led should be set.
+	 * Active-low indicates the LED polarity.
+	 */
+	int (*led_polarity_set)(struct phy_device *dev,
+				  u8 index, bool active_low);
+
 	/**
 	 * @led_hw_is_supported: Can the HW support the given rules.
 	 * @dev: PHY device which has the LED

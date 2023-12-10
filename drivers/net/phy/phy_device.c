@@ -3091,7 +3091,7 @@ static int of_phy_led(struct phy_device *phydev,
 	struct led_init_data init_data = {};
 	struct led_classdev *cdev;
 	struct phy_led *phyled;
-	u32 index;
+	u32 index, led_active_low;
 	int err;
 
 	phyled = devm_kzalloc(dev, sizeof(*phyled), GFP_KERNEL);
@@ -3126,6 +3126,12 @@ static int of_phy_led(struct phy_device *phydev,
 	cdev->hw_control_get_device = phy_led_hw_control_get_device;
 #endif
 	cdev->max_brightness = 1;
+
+	if (phydev->drv->led_polarity_set &&
+	    !of_property_read_u32(led, "led-active-low", &led_active_low)) {
+		phydev->drv->led_polarity_set(phydev, index, !!led_active_low);
+	}
+
 	init_data.devicename = dev_name(&phydev->mdio.dev);
 	init_data.fwnode = of_fwnode_handle(led);
 	init_data.devname_mandatory = true;
