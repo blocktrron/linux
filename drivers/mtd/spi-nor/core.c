@@ -2799,6 +2799,7 @@ static int spi_nor_quad_enable(struct spi_nor *nor)
 
 static int spi_nor_init(struct spi_nor *nor)
 {
+	struct of_node *np = spi_nor_get_flash_node(nor);
 	int err;
 
 	err = spi_nor_octal_dtr_enable(nor, true);
@@ -2824,6 +2825,8 @@ static int spi_nor_init(struct spi_nor *nor)
 	 * SNOR_F_SWP_IS_VOLATILE.
 	 */
 	if (IS_ENABLED(CONFIG_MTD_SPI_NOR_SWP_DISABLE) ||
+		of_property_read_bool(nor->dev->of_node,
+				      "swp-disable") ||
 	    (IS_ENABLED(CONFIG_MTD_SPI_NOR_SWP_DISABLE_ON_VOLATILE) &&
 	     nor->flags & SNOR_F_SWP_IS_VOLATILE))
 		spi_nor_try_unlock_all(nor);
