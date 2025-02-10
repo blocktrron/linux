@@ -72,6 +72,8 @@ static int rmnet_vnd_headroom(struct rmnet_port *port)
 
 	if (port->data_format & RMNET_FLAGS_EGRESS_MAP_CKSUMV4)
 		headroom += sizeof(struct rmnet_map_ul_csum_header);
+	else if (port->data_format & RMNET_FLAGS_EGRESS_MAP_CKSUMV5)
+		headroom += sizeof(struct rmnet_map_v5_csum_header);
 
 	return headroom;
 }
