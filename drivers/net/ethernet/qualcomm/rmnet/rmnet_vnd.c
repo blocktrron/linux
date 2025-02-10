@@ -78,6 +78,14 @@ static int rmnet_vnd_headroom(struct rmnet_port *port)
 	return headroom;
 }
 
+static int rmnet_vnd_max_packet_size(struct rmnet_port *port)
+{
+	if (port->data_format & RMNET_FLAGS_INGRESS_MAP_CKSUMV5)
+		return RMNET_MAX_PACKET_SIZE_V5;
+
+	return RMNET_MAX_PACKET_SIZE;
+}
+
 static int rmnet_vnd_change_mtu(struct net_device *rmnet_dev, int new_mtu)
 {
 	struct rmnet_priv *priv = netdev_priv(rmnet_dev);
@@ -88,7 +96,7 @@ static int rmnet_vnd_change_mtu(struct net_device *rmnet_dev, int new_mtu)
 
 	headroom = rmnet_vnd_headroom(port);
 
-	if (new_mtu < 0 || new_mtu > RMNET_MAX_PACKET_SIZE ||
+	if (new_mtu < 0 || new_mtu > rmnet_vnd_max_packet_size(port) ||
 	    new_mtu > (priv->real_dev->mtu - headroom))
 		return -EINVAL;
 
