@@ -154,6 +154,18 @@ static int rmnet_newlink(struct net_device *dev,
 		goto err0;
 
 	port = rmnet_get_port_rtnl(real_dev);
+
+	if (data[IFLA_RMNET_FLAGS]) {
+		struct ifla_rmnet_flags *flags;
+
+		flags = nla_data(data[IFLA_RMNET_FLAGS]);
+		data_format &= ~flags->mask;
+		data_format |= flags->flags & flags->mask;
+	}
+
+	netdev_dbg(dev, "data format [0x%08X]\n", data_format);
+	port->data_format = data_format;
+
 	err = rmnet_vnd_newlink(mux_id, dev, port, real_dev, ep, extack);
 	if (err)
 		goto err1;
@@ -166,17 +178,6 @@ static int rmnet_newlink(struct net_device *dev,
 	port->rmnet_dev = dev;
 
 	hlist_add_head_rcu(&ep->hlnode, &port->muxed_ep[mux_id]);
-
-	if (data[IFLA_RMNET_FLAGS]) {
-		struct ifla_rmnet_flags *flags;
-
-		flags = nla_data(data[IFLA_RMNET_FLAGS]);
-		data_format &= ~flags->mask;
-		data_format |= flags->flags & flags->mask;
-	}
-
-	netdev_dbg(dev, "data format [0x%08X]\n", data_format);
-	port->data_format = data_format;
 
 	return 0;
 
