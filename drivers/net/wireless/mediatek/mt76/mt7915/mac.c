@@ -1356,15 +1356,10 @@ mt7915_mac_restart(struct mt7915_dev *dev)
 
 	mt7915_dma_reset(dev, true);
 
-	mt76_for_each_q_rx(mdev, i) {
-		if (mdev->q_rx[i].ndesc) {
-			napi_enable(&dev->mt76.napi[i]);
-		}
-	}
-
 	local_bh_disable();
 	mt76_for_each_q_rx(mdev, i) {
 		if (mdev->q_rx[i].ndesc) {
+			napi_enable(&dev->mt76.napi[i]);
 			napi_schedule(&dev->mt76.napi[i]);
 		}
 	}
@@ -1424,9 +1419,8 @@ out:
 	if (phy2)
 		clear_bit(MT76_RESET, &phy2->mt76->state);
 
-	napi_enable(&dev->mt76.tx_napi);
-
 	local_bh_disable();
+	napi_enable(&dev->mt76.tx_napi);
 	napi_schedule(&dev->mt76.tx_napi);
 	local_bh_enable();
 
@@ -1576,12 +1570,9 @@ void mt7915_mac_reset_work(struct work_struct *work)
 	if (phy2)
 		clear_bit(MT76_RESET, &phy2->mt76->state);
 
-	mt76_for_each_q_rx(&dev->mt76, i) {
-		napi_enable(&dev->mt76.napi[i]);
-	}
-
 	local_bh_disable();
 	mt76_for_each_q_rx(&dev->mt76, i) {
+		napi_enable(&dev->mt76.napi[i]);
 		napi_schedule(&dev->mt76.napi[i]);
 	}
 	local_bh_enable();
@@ -1590,8 +1581,8 @@ void mt7915_mac_reset_work(struct work_struct *work)
 
 	mt76_worker_enable(&dev->mt76.tx_worker);
 
-	napi_enable(&dev->mt76.tx_napi);
 	local_bh_disable();
+	napi_enable(&dev->mt76.tx_napi);
 	napi_schedule(&dev->mt76.tx_napi);
 	local_bh_enable();
 
