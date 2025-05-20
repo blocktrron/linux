@@ -243,6 +243,7 @@ static int sx951x_channel_init(struct sx951x_priv *priv, struct device_node *of_
 {
 	struct sx951x_key_data *key_data;
 	struct device *dev = priv->dev;
+	u32 cin_delta_ff;
 	int error;
 
 	key_data = &priv->key_data[chan_idx];
@@ -258,12 +259,31 @@ static int sx951x_channel_init(struct sx951x_priv *priv, struct device_node *of_
 		return 0;
 	}
 
-	error = of_property_read_u32(of_node, "semtech,cin-delta",
-				     &key_data->cin_delta);
-	if (key_data->cin_delta > 0x03) {
+	error = of_property_read_u32(of_node, "semtech,cin-delta-ff",
+				     &cin_delta_ff);
+	if (error) {
 		dev_err(dev, "Failed to read cin-delta for channel %d: %d\n",
 			chan_idx, error);
 		return error;
+	}
+
+	switch (cin_delta_ff) {
+		case 2300:
+			key_data->cin_delta = 0x03;
+			break;
+		case 2800:
+			key_data->cin_delta = 0x02;
+			break;
+		case 3500:
+			key_data->cin_delta = 0x01;
+			break;
+		case 7000:
+			key_data->cin_delta = 0x00;
+			break;
+		default:
+			dev_err(dev, "Invalid cin-delta-ff provided for channel %d\n",
+				chan_idx);
+		return -EINVAL;
 	}
 
 	error = of_property_read_u32(of_node, "semtech,sense-threshold",
