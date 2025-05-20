@@ -22,7 +22,7 @@
 
  /* Generic properties */
 #define SX951X_I2C_ADDRESS		0x2b
-#define SX951XB_I2C_ADDRESS_		0x2d
+#define SX951XB_I2C_ADDRESS		0x2d
 #define SX951X_NUM_CHANNELS		8
 #define SX951X_POLL_INTERVAL		100
 
@@ -392,7 +392,7 @@ static int sx951x_probe(struct i2c_client *i2c_client)
 	int error;
 
 	if (i2c_client->addr != SX951X_I2C_ADDRESS &&
-	    i2c_client->addr != SX951XB_I2C_ADDRESS_) {
+	    i2c_client->addr != SX951XB_I2C_ADDRESS) {
 		dev_err(dev, "Invalid I2C address: 0x%02x\n",
 			i2c_client->addr);
 		return -ENODEV;
