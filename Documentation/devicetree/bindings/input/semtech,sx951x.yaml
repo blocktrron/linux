@@ -58,16 +58,17 @@ patternProperties:
           be used for the channels. If this property is
           omitted, the channel is not used as a key.
 
-      semtech,cin-delta:
+      semtech,cin-delta-ff:
         $ref: /schemas/types.yaml#/definitions/uint32
-        minimum: 0
-        maximum: 3
+        enum:
+          - 2300
+          - 2800
+          - 3500
+          - 7000
         default: 3
         description:
           The capacitance delta which is used to detect a touch
-          or release event. The property value is mapped to a
-          farad range between 7pF and 2.3pF internally. The delta
-          becomes smaller the higher the value is.
+          or release event.
 
       semtech,sense-threshold:
         $ref: /schemas/types.yaml#/definitions/uint32
