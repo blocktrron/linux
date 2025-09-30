@@ -1962,7 +1962,7 @@ int mt76_connac_mcu_set_deep_sleep(struct mt76_dev *dev, bool enable)
 		.resp_type = 0,
 	};
 
-	snprintf(req.data, sizeof(req.data), "KeepFullPwr %d", !enable);
+	snprintf(req.data, sizeof(req.data), "KeepFullPwr %d", 1);
 
 	return mt76_mcu_send_msg(dev, MCU_CE_CMD(CHIP_CONFIG),
 				 &req, sizeof(req), false);
