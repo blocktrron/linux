@@ -679,7 +679,7 @@ static void mt7921_configure_filter(struct ieee80211_hw *hw,
 	MT7921_FILTER(FIF_OTHER_BSS, OTHER_BSS);
 
 	mt792x_mutex_acquire(dev);
-	mt7921_mcu_set_rxfilter(dev, flags, 0, 0);
+	mt7921_mcu_set_rxfilter(dev, 0, 0, 0);
 	mt792x_mutex_release(dev);
 
 	*total_flags &= (FIF_OTHER_BSS | FIF_FCSFAIL | FIF_CONTROL);
