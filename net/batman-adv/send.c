@@ -63,7 +63,7 @@ int batadv_send_skb_packet(struct sk_buff *skb,
 			   const u8 *dst_addr)
 {
 	struct ethhdr *ethhdr;
-	int ret;
+	int ret, headroom;
 
 	if (hard_iface->if_status != BATADV_IF_ACTIVE)
 		goto send_skb_err;
@@ -78,7 +78,8 @@ int batadv_send_skb_packet(struct sk_buff *skb,
 	}
 
 	/* push to the ethernet header. */
-	if (batadv_skb_head_push(skb, ETH_HLEN) < 0)
+	headroom = batadv_hardif_required_headroom(hard_iface);
+	if (batadv_skb_head_push_headroom(skb, ETH_HLEN, headroom) < 0)
 		goto send_skb_err;
 
 	skb_reset_mac_header(skb);

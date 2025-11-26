@@ -51,13 +51,15 @@
 #include "translation-table.h"
 
 /**
- * batadv_skb_head_push() - Increase header size and move (push) head pointer
+ * batadv_skb_head_push_headroom() - Increase header size and move (push)
+ *  head pointer preserving specified headroom
  * @skb: packet buffer which should be modified
  * @len: number of bytes to add
+ * @headroom: size of headroom to allocate
  *
  * Return: 0 on success or negative error number in case of failure
  */
-int batadv_skb_head_push(struct sk_buff *skb, unsigned int len)
+int batadv_skb_head_push_headroom(struct sk_buff *skb, unsigned int len, unsigned int headroom)
 {
 	int result;
 
@@ -68,12 +70,24 @@ int batadv_skb_head_push(struct sk_buff *skb, unsigned int len)
 	 * after that call and thus allow other skbs with the same data buffer
 	 * to write freely in that area.
 	 */
-	result = skb_cow_head(skb, len);
+	result = skb_cow_head(skb, len + headroom);
 	if (result < 0)
 		return result;
 
 	skb_push(skb, len);
 	return 0;
+}
+
+/**
+ * batadv_skb_head_push() - Increase header size and move (push) head pointer
+ * @skb: packet buffer which should be modified
+ * @len: number of bytes to add
+ *
+ * Return: 0 on success or negative error number in case of failure
+ */
+int batadv_skb_head_push(struct sk_buff *skb, unsigned int len)
+{
+	return batadv_skb_head_push_headroom(skb, len, 0);
 }
 
 /**

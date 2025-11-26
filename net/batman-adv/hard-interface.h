@@ -119,4 +119,25 @@ out:
 	return hard_iface;
 }
 
+/**
+ * batadv_hardif_required_headroom() - calculate required headroom for a hard
+ *  interface
+ * @hard_iface: the hard interface to calculate headroom for
+ *
+ * Return: required headroom size, 0 if undeterminable
+ */
+static inline unsigned int
+batadv_hardif_required_headroom(struct batadv_hard_iface *hard_iface)
+{
+	unsigned int headroom = 0;
+
+	if (hard_iface->net_dev) {
+		headroom += hard_iface->net_dev->needed_headroom;
+		if (hard_iface->net_dev->hard_header_len > ETH_HLEN)
+			headroom += hard_iface->net_dev->hard_header_len - ETH_HLEN;
+	}
+
+	return headroom;
+}
+
 #endif /* _NET_BATMAN_ADV_HARD_INTERFACE_H_ */

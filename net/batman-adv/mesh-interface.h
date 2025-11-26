@@ -15,6 +15,8 @@
 #include <linux/types.h>
 
 int batadv_skb_head_push(struct sk_buff *skb, unsigned int len);
+int batadv_skb_head_push_headroom(struct sk_buff *skb, unsigned int len,
+				  unsigned int headroom);
 void batadv_interface_rx(struct net_device *mesh_iface,
 			 struct sk_buff *skb, int hdr_size,
 			 struct batadv_orig_node *orig_node);
