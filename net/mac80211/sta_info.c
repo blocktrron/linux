@@ -153,6 +153,8 @@ static void __cleanup_single_sta(struct sta_info *sta)
 		clear_sta_flag(sta, WLAN_STA_PS_DELIVER);
 
 		atomic_dec(&ps->num_sta_ps);
+
+		ieee80211_sta_recalc_pending_airtime_ps(sta);
 	}
 
 	ieee80211_purge_sta_txqs(sta);
@@ -2440,6 +2442,35 @@ void ieee80211_sta_recalc_aggregates(struct ieee80211_sta *pubsta)
 	__ieee80211_sta_recalc_aggregates(sta, sta->sdata->vif.active_links);
 }
 EXPORT_SYMBOL(ieee80211_sta_recalc_aggregates);
+
+void ieee80211_sta_recalc_pending_airtime_ps(struct sta_info *sta)
+{
+	struct ieee80211_local *local = sta->local;
+	int ac_ps_airtime[IEEE80211_NUM_ACS] = {0};
+	int total_ps_airtime = 0;
+	int tx_pending = 0;
+	int ac;
+
+	if (!ieee80211_hw_check(&local->hw, STORES_PS_FRAMES))
+		return;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(sta, &local->sta_list, list) {
+		if (!test_sta_flag(sta, WLAN_STA_PS_STA))
+			continue;
+
+		for (ac = 0; ac < IEEE80211_NUM_ACS; ac++) {
+			tx_pending = atomic_read(&sta->airtime[ac].aql_tx_pending);
+			ac_ps_airtime[ac] += tx_pending;
+			total_ps_airtime += tx_pending;
+		}
+	}
+	rcu_read_unlock();
+
+	atomic_set(&local->aql_total_pending_airtime_ps, total_ps_airtime);
+	for (ac = 0; ac < IEEE80211_NUM_ACS; ac++)
+		atomic_set(&local->aql_ac_pending_airtime_ps[ac], ac_ps_airtime[ac]);
+}
 
 void ieee80211_sta_update_pending_airtime(struct ieee80211_local *local,
 					  struct sta_info *sta, u8 ac,

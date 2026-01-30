@@ -990,11 +990,13 @@ struct ieee80211_hw *ieee80211_alloc_hw_nm(size_t priv_data_len,
 		local->aql_txq_limit_high[i] =
 			IEEE80211_DEFAULT_AQL_TXQ_LIMIT_H;
 		atomic_set(&local->aql_ac_pending_airtime[i], 0);
+		atomic_set(&local->aql_ac_pending_airtime_ps[i], 0);
 	}
 
 	local->airtime_flags = AIRTIME_USE_TX | AIRTIME_USE_RX;
 	local->aql_threshold = IEEE80211_AQL_THRESHOLD;
 	atomic_set(&local->aql_total_pending_airtime, 0);
+	atomic_set(&local->aql_total_pending_airtime_ps, 0);
 
 	spin_lock_init(&local->handle_wake_tx_queue_lock);
 

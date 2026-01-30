@@ -1433,6 +1433,9 @@ struct ieee80211_local {
 
 	const struct ieee80211_ops *ops;
 
+	atomic_t aql_total_pending_airtime_ps;
+	atomic_t aql_ac_pending_airtime_ps[IEEE80211_NUM_ACS];
+
 	/*
 	 * private workqueue to mac80211. mac80211 makes this accessible
 	 * via ieee80211_queue_work()

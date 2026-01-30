@@ -1677,6 +1677,8 @@ static void sta_ps_start(struct sta_info *sta)
 	ps_dbg(sdata, "STA %pM aid %d enters power save mode\n",
 	       sta->sta.addr, sta->sta.aid);
 
+	ieee80211_sta_recalc_pending_airtime_ps(sta);
+
 	ieee80211_clear_fast_xmit(sta);
 
 	for (tid = 0; tid < IEEE80211_NUM_TIDS; tid++) {
@@ -1710,12 +1712,15 @@ static void sta_ps_end(struct sta_info *sta)
 		clear_sta_flag(sta, WLAN_STA_PS_STA);
 		ps_dbg(sta->sdata, "STA %pM aid %d driver-ps-blocked\n",
 		       sta->sta.addr, sta->sta.aid);
-		return;
+		goto out;
 	}
 
 	set_sta_flag(sta, WLAN_STA_PS_DELIVER);
 	clear_sta_flag(sta, WLAN_STA_PS_STA);
 	ieee80211_sta_ps_deliver_wakeup(sta);
+
+out:
+	ieee80211_sta_recalc_pending_airtime_ps(sta);
 }
 
 int ieee80211_sta_ps_transition(struct ieee80211_sta *pubsta, bool start)
