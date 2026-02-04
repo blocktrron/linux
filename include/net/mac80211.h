@@ -2913,6 +2913,10 @@ struct ieee80211_txq {
  *	HW flag so drivers can opt in according to their own control, e.g. in
  *	testing.
  *
+ * @IEEE80211_HW_STORES_PS_FRAMES: Hardware/driver stores frames for
+ *	power-saving stations instead of returning them to mac80211 for
+ *	buffering.
+ *
  * @NUM_IEEE80211_HW_FLAGS: number of hardware flags, used for sizing arrays
  */
 enum ieee80211_hw_flags {
@@ -2973,6 +2977,7 @@ enum ieee80211_hw_flags {
 	IEEE80211_HW_DISALLOW_PUNCTURING,
 	IEEE80211_HW_HANDLES_QUIET_CSA,
 	IEEE80211_HW_STRICT,
+	IEEE80211_HW_STORES_PS_FRAMES,
 
 	/* keep last, obviously */
 	NUM_IEEE80211_HW_FLAGS

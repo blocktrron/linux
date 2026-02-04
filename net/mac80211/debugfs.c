@@ -490,6 +490,7 @@ static const char *hw_flag_names[] = {
 	FLAG(DISALLOW_PUNCTURING),
 	FLAG(HANDLES_QUIET_CSA),
 	FLAG(STRICT),
+	FLAG(STORES_PS_FRAMES),
 #undef FLAG
 };
 
