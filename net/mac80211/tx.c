@@ -4190,6 +4190,8 @@ ieee80211_txq_schedule_airtime_check(struct ieee80211_local *local, u8 ac)
 {
 	unsigned int num_txq = 0;
 	struct txq_info *txq;
+	int total_pending;
+	int ps_pending;
 	u32 aql_limit;
 
 	if (!wiphy_ext_feature_isset(local->hw.wiphy, NL80211_EXT_FEATURE_AQL))
@@ -4201,7 +4203,19 @@ ieee80211_txq_schedule_airtime_check(struct ieee80211_local *local, u8 ac)
 	aql_limit = (num_txq - 1) * local->aql_txq_limit_low[ac] / 2 +
 		    local->aql_txq_limit_high[ac];
 
-	return atomic_read(&local->aql_ac_pending_airtime[ac]) < aql_limit;
+	total_pending = atomic_read(&local->aql_ac_pending_airtime[ac]);
+	ps_pending = atomic_read(&local->aql_ac_pending_airtime_ps[ac]);
+
+	/* PS frames can exceed the total in case driver delivers
+	 * TX complete messages prior to the STAs PS change.
+	 *
+	 * Handle this case here by accounting PS pending packets as
+	 * non-PS packets.
+	 */
+	if (ps_pending > total_pending)
+		ps_pending = 0;
+
+	return total_pending - ps_pending < aql_limit;
 }
 
 bool ieee80211_txq_may_transmit(struct ieee80211_hw *hw,
