@@ -402,6 +402,56 @@ mt7915_mcu_rx_bcc_notify(struct mt7915_dev *dev, struct sk_buff *skb)
 			mt7915_mcu_cca_finish, mphy->hw);
 }
 
+static void mt7915_mcu_rx_ps_sync(struct mt7915_dev *dev, struct sk_buff *skb)
+{
+	struct mt7915_mcu_ps_notify *p;
+	struct ieee80211_sta *sta;
+	struct mt7915_sta *msta;
+	struct mt76_wcid *wcid;
+	u16 wcid_idx;
+
+	p = (struct mt7915_mcu_ps_notify *)skb->data;
+	wcid_idx = p->wtbl_lower | (p->wtbl_higher) << 8;
+
+	rcu_read_lock();
+	wcid = mt76_wcid_ptr(dev, wcid_idx);
+	if (!wcid)
+		goto out;
+
+	sta = wcid_to_sta(wcid);
+	if (!sta)
+		goto out;
+
+	msta = (struct mt7915_sta *)sta->drv_priv;
+
+	if ((!!p->ps_bit) == !!test_bit(MT_WCID_FLAG_PS, &wcid->flags))
+		return;
+
+	spin_lock_bh(&msta->ps_lock);
+	msta->last_ps_transition = jiffies;
+
+	if (p->ps_bit)
+		set_bit(MT_WCID_FLAG_PS, &wcid->flags);
+	else
+		clear_bit(MT_WCID_FLAG_PS, &wcid->flags);
+
+	if (p->ps_bit &&
+	    atomic_read(&msta->wcid.pending_frames) >= MT_MAX_PENDING_PS_FRAMES) {
+		/* Block only if we already have the maximum number of
+		 * buffered frames queued in hardware.
+		 */
+		set_bit(MT_WCID_FLAG_PS_HOST, &wcid->flags);
+		ieee80211_sta_ps_transition_ni(sta, true);	
+	} else if (!p->ps_bit) {
+		clear_bit(MT_WCID_FLAG_PS_HOST, &wcid->flags);
+		ieee80211_sta_ps_transition_ni(sta, false);
+	}
+	spin_unlock_bh(&msta->ps_lock);
+
+out:
+	rcu_read_unlock();
+}
+
 static void
 mt7915_mcu_rx_ext_event(struct mt7915_dev *dev, struct sk_buff *skb)
 {
@@ -423,6 +473,9 @@ mt7915_mcu_rx_ext_event(struct mt7915_dev *dev, struct sk_buff *skb)
 		break;
 	case MCU_EXT_EVENT_BCC_NOTIFY:
 		mt7915_mcu_rx_bcc_notify(dev, skb);
+		break;
+	case MCU_EXT_EVENT_PS_SYNC:
+		mt7915_mcu_rx_ps_sync(dev, skb);
 		break;
 	default:
 		break;

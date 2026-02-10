@@ -754,6 +754,7 @@ int mt7915_mac_sta_add(struct mt76_dev *mdev, struct ieee80211_vif *vif,
 
 	INIT_LIST_HEAD(&msta->rc_list);
 	INIT_LIST_HEAD(&msta->wcid.poll_list);
+	spin_lock_init(&msta->ps_lock);
 	msta->vif = mvif;
 	msta->wcid.sta_disabled = 1;
 	msta->wcid.idx = idx;

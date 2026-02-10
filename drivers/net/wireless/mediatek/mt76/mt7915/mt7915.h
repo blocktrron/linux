@@ -86,6 +86,8 @@
 
 #define MT7915_RTS_LEN_THRES		0x92b
 
+#define MT7915_PS_HOST_TIMEOUT_MS	30000
+
 struct mt7915_vif;
 struct mt7915_sta;
 struct mt7915_dfs_pulse;
@@ -148,6 +150,9 @@ struct mt7915_sta {
 	unsigned long changed;
 	unsigned long jiffies;
 	struct mt76_connac_sta_key_conf bip;
+
+	spinlock_t ps_lock;
+	unsigned long last_ps_transition;
 
 	struct {
 		u8 flowid_mask;

@@ -1983,6 +1983,40 @@ void mt7915_mac_sta_rc_work(struct work_struct *work)
 	spin_unlock_bh(&dev->mt76.sta_poll_lock);
 }
 
+static void
+mt7915_mac_ps_check_sta(void *data, struct ieee80211_sta *sta)
+{
+	struct mt7915_sta *msta = (struct mt7915_sta *)sta->drv_priv;
+	int pending_frames = atomic_read(&msta->wcid.pending_frames);
+
+	/* No power save */
+	if (!test_bit(MT_WCID_FLAG_PS, &msta->wcid.flags))
+		return;
+
+	/* Host already informed */
+	if (test_bit(MT_WCID_FLAG_PS_HOST, &msta->wcid.flags))
+		return;
+
+	/* No pending frames */
+	if (pending_frames == 0)
+		goto out;
+
+	spin_lock_bh(&msta->ps_lock);
+	/* Check again under lock if STA is still in power save */
+	if (!test_bit(MT_WCID_FLAG_PS, &msta->wcid.flags))
+		goto out;
+
+	if (pending_frames < MT_MAX_PENDING_PS_FRAMES &&
+	    !time_after(jiffies, msta->last_ps_transition +
+			msecs_to_jiffies(MT7915_PS_HOST_TIMEOUT_MS)))
+		goto out;
+
+	set_bit(MT_WCID_FLAG_PS_HOST, &msta->wcid.flags);
+	ieee80211_sta_ps_transition_ni(sta, true);
+out:
+	spin_unlock_bh(&msta->ps_lock);
+}
+
 void mt7915_mac_work(struct work_struct *work)
 {
 	struct mt7915_phy *phy;
@@ -2003,6 +2037,8 @@ void mt7915_mac_work(struct work_struct *work)
 
 		if (phy->dev->muru_debug)
 			mt7915_mcu_muru_debug_get(phy);
+
+		ieee80211_iterate_stations_atomic(hw, mt7915_mac_ps_check_sta, NULL);
 	}
 
 	mutex_unlock(&mphy->dev->mutex);
