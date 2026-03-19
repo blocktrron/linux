@@ -250,6 +250,19 @@ mt76_tx_check_non_aql(struct mt76_dev *dev, struct mt76_wcid *wcid,
 	}
 }
 
+static void
+mt76_tx_check_pending(struct mt76_wcid *wcid)
+{
+	int pending;
+
+	if (!wcid || !wcid->sta)
+		return;
+
+	pending = atomic_dec_return(&wcid->pending_frames);
+	if (pending < 0)
+		atomic_cmpxchg(&wcid->pending_frames, pending, 0);
+}
+
 void __mt76_tx_complete_skb(struct mt76_dev *dev, u16 wcid_idx, struct sk_buff *skb,
 			    struct list_head *free_list)
 {
@@ -266,6 +279,7 @@ void __mt76_tx_complete_skb(struct mt76_dev *dev, u16 wcid_idx, struct sk_buff *
 
 	wcid = __mt76_wcid_ptr(dev, wcid_idx);
 	mt76_tx_check_non_aql(dev, wcid, skb);
+	mt76_tx_check_pending(wcid);
 
 #ifdef CONFIG_NL80211_TESTMODE
 	if (mt76_is_testmode_skb(dev, skb, &hw)) {
@@ -325,10 +339,13 @@ __mt76_tx_queue_skb(struct mt76_phy *phy, int qid, struct sk_buff *skb,
 		return idx;
 
 	wcid = (struct mt76_wcid *)sta->drv_priv;
+
 	if (!wcid->sta)
 		return idx;
 
 	q->entry[idx].wcid = wcid->idx;
+
+	atomic_inc(&wcid->pending_frames);
 
 	if (!non_aql)
 		return idx;

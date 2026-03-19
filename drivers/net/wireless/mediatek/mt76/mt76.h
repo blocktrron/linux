@@ -380,6 +380,7 @@ struct mt76_wcid {
 	struct mt76_rx_tid __rcu *aggr[IEEE80211_NUM_TIDS];
 
 	atomic_t non_aql_packets;
+	atomic_t pending_frames;
 	unsigned long flags;
 
 	struct ewma_signal rssi;
