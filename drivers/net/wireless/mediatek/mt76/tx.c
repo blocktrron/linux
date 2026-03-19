@@ -467,6 +467,17 @@ mt76_txq_stopped(struct mt76_queue *q)
 	       q->queued + MT_TXQ_FREE_THR >= q->ndesc;
 }
 
+static bool
+mt76_txq_ps_stopped(struct mt76_dev *dev, struct mt76_wcid *wcid)
+{
+	/* If PS state is managed in hardware, ensure enough frames are buffered */
+	if (dev->drv->drv_flags & MT_DRV_HW_MGMT_TXQ) {
+		return false;
+	}
+
+	return test_bit(MT_WCID_FLAG_PS, &wcid->flags);
+}
+
 static int
 mt76_txq_send_burst(struct mt76_phy *phy, struct mt76_queue *q,
 		    struct mt76_txq *mtxq, struct mt76_wcid *wcid)
@@ -480,7 +491,7 @@ mt76_txq_send_burst(struct mt76_phy *phy, struct mt76_queue *q,
 	bool stop = false;
 	int idx;
 
-	if (test_bit(MT_WCID_FLAG_PS, &wcid->flags))
+	if (mt76_txq_ps_stopped(dev, wcid))
 		return 0;
 
 	if (atomic_read(&wcid->non_aql_packets) >= MT_MAX_NON_AQL_PKT)
@@ -552,7 +563,7 @@ mt76_txq_schedule_list(struct mt76_phy *phy, enum mt76_txq_id qid)
 
 		mtxq = (struct mt76_txq *)txq->drv_priv;
 		wcid = __mt76_wcid_ptr(dev, mtxq->wcid);
-		if (!wcid || test_bit(MT_WCID_FLAG_PS, &wcid->flags))
+		if (!wcid || mt76_txq_ps_stopped(dev, wcid))
 			continue;
 
 		if (atomic_read(&wcid->non_aql_packets) >= MT_MAX_NON_AQL_PKT)
