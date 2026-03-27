@@ -25,6 +25,7 @@
 #define MT_SKB_HEAD_LEN		256
 
 #define MT_MAX_NON_AQL_PKT	16
+#define MT_MAX_PENDING_PS_FRAMES	8	
 #define MT_TXQ_FREE_THR		32
 
 #define MT76_TOKEN_FREE_THR	64
@@ -359,6 +360,7 @@ struct mt76_sta_stats {
 enum mt76_wcid_flags {
 	MT_WCID_FLAG_CHECK_PS,
 	MT_WCID_FLAG_PS,
+	MT_WCID_FLAG_PS_HOST,
 	MT_WCID_FLAG_4ADDR,
 	MT_WCID_FLAG_HDR_TRANS,
 };
@@ -1553,6 +1555,7 @@ void mt76_rx_aggr_stop(struct mt76_dev *dev, struct mt76_wcid *wcid, u8 tid);
 void mt76_wcid_key_setup(struct mt76_dev *dev, struct mt76_wcid *wcid,
 			 struct ieee80211_key_conf *key);
 
+bool mt76_tx_sta_ps_overlimit(struct mt76_dev *dev, struct mt76_wcid *wcid);
 void mt76_tx_status_lock(struct mt76_dev *dev, struct sk_buff_head *list)
 			 __acquires(&dev->status_lock);
 void mt76_tx_status_unlock(struct mt76_dev *dev, struct sk_buff_head *list)

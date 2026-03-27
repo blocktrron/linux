@@ -14,6 +14,30 @@ mt76_txq_get_qid(struct ieee80211_txq *txq)
 	return txq->ac;
 }
 
+bool
+mt76_tx_sta_ps_overlimit(struct mt76_dev *dev, struct mt76_wcid *wcid)
+{
+	if (!(dev->drv->drv_flags & MT_DRV_HW_MGMT_TXQ))
+		return false;
+
+	if (!test_bit(MT_WCID_FLAG_PS, &wcid->flags))
+		return false;
+
+	if (test_bit(MT_WCID_FLAG_PS_HOST, &wcid->flags))
+		return true;
+
+	return atomic_read(&wcid->pending_frames) >= MT_MAX_PENDING_PS_FRAMES;
+}
+
+static bool
+mt76_tx_sta_overlimit(struct mt76_dev *dev, struct mt76_wcid *wcid)
+{
+	if (atomic_read(&wcid->non_aql_packets) >= MT_MAX_NON_AQL_PKT)
+		return true;
+
+	return mt76_tx_sta_ps_overlimit(dev, wcid);
+}
+
 void
 mt76_tx_check_agg_ssn(struct ieee80211_sta *sta, struct sk_buff *skb)
 {
@@ -346,6 +370,8 @@ __mt76_tx_queue_skb(struct mt76_phy *phy, int qid, struct sk_buff *skb,
 	q->entry[idx].wcid = wcid->idx;
 
 	atomic_inc(&wcid->pending_frames);
+	if (stop && mt76_tx_sta_ps_overlimit(dev, wcid))
+		*stop = true;
 
 	if (!non_aql)
 		return idx;
@@ -511,7 +537,7 @@ mt76_txq_send_burst(struct mt76_phy *phy, struct mt76_queue *q,
 	if (mt76_txq_ps_stopped(dev, wcid))
 		return 0;
 
-	if (atomic_read(&wcid->non_aql_packets) >= MT_MAX_NON_AQL_PKT)
+	if (mt76_tx_sta_overlimit(dev, wcid))
 		return 0;
 
 	skb = mt76_txq_dequeue(phy, mtxq);
@@ -583,7 +609,7 @@ mt76_txq_schedule_list(struct mt76_phy *phy, enum mt76_txq_id qid)
 		if (!wcid || mt76_txq_ps_stopped(dev, wcid))
 			continue;
 
-		if (atomic_read(&wcid->non_aql_packets) >= MT_MAX_NON_AQL_PKT)
+		if (mt76_tx_sta_overlimit(dev, wcid))
 			continue;
 
 		phy = mt76_dev_phy(dev, wcid->phy_idx);
@@ -668,6 +694,13 @@ mt76_txq_schedule_pending_wcid(struct mt76_phy *phy, struct mt76_wcid *wcid,
 
 		q = phy->q_tx[qid];
 		if (mt76_txq_stopped(q) || test_bit(MT76_RESET, &phy->state)) {
+			ret = -1;
+			break;
+		}
+
+		if ((dev->drv->drv_flags & MT_DRV_HW_MGMT_TXQ) &&
+		    qid != MT_TXQ_PSD &&
+		    test_bit(MT_WCID_FLAG_PS_HOST, &wcid->flags)) {
 			ret = -1;
 			break;
 		}
